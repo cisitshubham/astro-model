@@ -14,3 +14,5 @@ CSRF_TRUSTED_ORIGINS = os.getenv(
 # Static files
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+
