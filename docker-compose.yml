@@ -6,7 +6,10 @@ services:
       context: .
       dockerfile: Dockerfile
 
-    command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput && gunicorn panchang_engine.wsgi:application --bind 0.0.0.0:8000 --workers 3"
+    command: >
+      sh -c "python3 manage.py migrate &&
+             python3 manage.py collectstatic --noinput &&
+             gunicorn panchang_engine.wsgi:application --bind 0.0.0.0:8000 --workers 3"
 
     restart: unless-stopped
 
