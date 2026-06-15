@@ -1,11 +1,11 @@
 from datetime import datetime, timedelta
-import swisseph as swe
+import swisseph as swe #type: ignore
 import pytz
 import random
 
 # Attempt imports gracefully; provide mock fallback for environments without dashaflow installed
 try:
-    from dashaflow import cast_chart
+    from dashaflow import cast_chart #type: ignore
 except ImportError:
     def cast_chart(*args, **kwargs):
         return {}
@@ -78,7 +78,7 @@ class EphemerisComputationalEngine:
             for key in ["longitude", "degrees", "degree", "lon", "position", "value"]:
                 if key in body_data:
                     return float(body_data[key])
-        return None
+        return None #type: ignore
 
     def _fallback_extract_sign(self, chart_data, target_key):
         """Deep scanning routine to safely recover sign designations from unpredictable nested structures."""
@@ -121,7 +121,7 @@ class EphemerisComputationalEngine:
         try:
             tz = pytz.timezone(timezone_str)
             localized = tz.localize(target_date)
-            numeric_tz = localized.utcoffset().total_seconds() / 3600.0
+            numeric_tz = localized.utcoffset().total_seconds() / 3600.0 #type: ignore
         except Exception:
             numeric_tz = 5.5
             timezone_str = "Asia/Kolkata"
@@ -284,11 +284,11 @@ class NumerologyComputationalEngine:
         ephemeris = EphemerisComputationalEngine()
         panchang_data = ephemeris.get_panchang_data(target_date, lat, lon, timezone_str)
         
-        current_sun_sign = panchang_data.get('sun_sign', 'Unknown')
-        current_moon_sign = panchang_data.get('moon_sign', 'Unknown')
-        active_nakshatra = panchang_data.get('nakshatra', 'Unknown')
+        current_sun_sign = panchang_data.get('panchang', {}).get('sun_sign', 'Unknown')
+        current_moon_sign = panchang_data.get('panchang', {}).get('moon_sign', 'Unknown')
+        active_nakshatra = panchang_data.get('panchang', {}).get('nakshatra', 'Unknown')
         
-        planets_matrix = panchang_data.get('celestial_planets_matrix', {})
+        planets_matrix = panchang_data.get('planets', {})
         transit_ruler_sign = planets_matrix.get('mars', {}).get('sign_resolved', 'Unknown')
 
         universal_seed = self._reduce_to_single_digit(day + month + year)
@@ -355,18 +355,18 @@ if __name__ == "__main__":
     print("=" * 50)
     print("        DAILY PANCHANG ENGINE METRICS        ")
     print("=" * 50)
-    print(f" Day (Vara)   : {panchang_output['vara']}")
-    print(f" Paksha       : {panchang_output['paksha']}")
-    print(f" Tithi        : {panchang_output['tithi']}")
-    print(f" Nakshatra    : {panchang_output['nakshatra']}")
-    print(f" Yoga         : {panchang_output['yoga']}")
-    print(f" Karana       : {panchang_output['karana']}")
+    print(f" Day (Vara)   : {panchang_output.get('panchang', {}).get('vara')}")
+    print(f" Paksha       : {panchang_output.get('panchang', {}).get('paksha')}")
+    print(f" Tithi        : {panchang_output.get('panchang', {}).get('tithi')}")
+    print(f" Nakshatra    : {panchang_output.get('panchang', {}).get('nakshatra')}")
+    print(f" Yoga         : {panchang_output.get('panchang', {}).get('yoga')}")
+    print(f" Karana       : {panchang_output.get('panchang', {}).get('karana')}")
     print("-" * 50)
-    print(f" Sun Sign     : {panchang_output['sun_sign']}")
-    print(f" Moon Sign    : {panchang_output['moon_sign']}")
+    print(f" Sun Sign     : {panchang_output.get('panchang', {}).get('sun_sign')}")
+    print(f" Moon Sign    : {panchang_output.get('panchang', {}).get('moon_sign')}")
     print("-" * 50)
-    print(f" Sunrise      : {panchang_output['sunrise']}")
-    print(f" Sunset       : {panchang_output['sunset']}")
-    print(f" Abhijit Muh. : {panchang_output['abhijit_muhurat']}")
-    print(f" Rahu Kaal    : {panchang_output['rahu_kaal']}")
+    print(f" Sunrise      : {panchang_output.get('timings', {}).get('sunrise')}")
+    print(f" Sunset       : {panchang_output.get('timings', {}).get('sunset')}")
+    print(f" Abhijit Muh. : {panchang_output.get('timings', {}).get('abhijit_muhurat')}")
+    print(f" Rahu Kaal    : {panchang_output.get('timings', {}).get('rahu_kaal')}")
     print("=" * 50)

@@ -1,6 +1,6 @@
 import pytz
 import math
-import swisseph as swe
+import swisseph as swe    # type: ignore
 from datetime import datetime, timedelta
 from django.http import JsonResponse
 from django.views import View
@@ -107,7 +107,7 @@ class GlobalPanchangAPIView(View):
             try:
                 geo_data = self.geocoding_agent.geocode(location_param, timeout=5)
                 if geo_data:
-                    lat, lon = geo_data.latitude, geo_data.longitude
+                    lat, lon = geo_data.latitude, geo_data.longitude #type: ignore
                     resolved_location = location_param
                     tz_name = self.tz_finder.timezone_at(lng=lon, lat=lat) or self.DEFAULT_TZ
                 else:
@@ -121,7 +121,11 @@ class GlobalPanchangAPIView(View):
         try:
             tz = pytz.timezone(tz_name)
             localized = tz.localize(target_dt)
-            numeric_tz = localized.utcoffset().total_seconds() / 3600.0
+            offset = localized.utcoffset()
+            if offset is not None:
+                numeric_tz = offset.total_seconds() / 3600.0
+            else:
+                numeric_tz = 5.5
         except Exception:
             numeric_tz = 5.5
 
@@ -134,8 +138,8 @@ class GlobalPanchangAPIView(View):
             if not time_val or time_val == "N/A": return default
             return time_val.replace(" AM", "").replace(" PM", "").strip()
 
-        sunrise_str = clean_time(raw_metrics.get("sunrise"), "05:30")
-        sunset_str = clean_time(raw_metrics.get("sunset"), "18:45")
+        sunrise_str = clean_time(raw_metrics.get("timings", {}).get("sunrise"), "05:30")
+        sunset_str = clean_time(raw_metrics.get("timings", {}).get("sunset"), "18:45")
 
         # Re-parse into true datetime objects to execute dynamic duration subdivisions
         dt_sunrise = datetime.strptime(f"{date_param} {sunrise_str}", "%Y-%m-%d %H:%M")
@@ -185,13 +189,13 @@ class GlobalPanchangAPIView(View):
             "Thursday": "Jupiter", "Friday": "Venus", "Saturday": "Saturn", "Sunday": "Sun"
         }
 
-        current_yoga_clean = str(raw_metrics.get("yoga", "Siddha")).strip().capitalize()
+        current_yoga_clean = str(raw_metrics.get("panchang", {}).get("yoga", "Siddha")).strip().capitalize()
         try:
             next_yoga = YOGAS_SEQUENCE[(YOGAS_SEQUENCE.index(current_yoga_clean) + 1) % len(YOGAS_SEQUENCE)]
         except ValueError:
             next_yoga = "Sadhya"
 
-        resolved_vara = str(raw_metrics.get("vara", target_dt.strftime("%A"))).strip().capitalize()
+        resolved_vara = str(raw_metrics.get("panchang", {}).get("vara", target_dt.strftime("%A"))).strip().capitalize()
 
         # 6. Build the Final Schema Payload Map
         payload = {
@@ -204,8 +208,8 @@ class GlobalPanchangAPIView(View):
                 "sunset": dt_sunset.strftime("%H:%M"),
                 "moonrise": dt_moonrise.strftime("%H:%M"),
                 "moonset": dt_moonset.strftime("%H:%M"),
-                "moon_sign": raw_metrics.get("moon_sign", "Unknown"),
-                "sun_sign": raw_metrics.get("sun_sign", "Unknown"),
+                "moon_sign": raw_metrics.get("panchang", {}).get("moon_sign", "Unknown"),
+                "sun_sign": raw_metrics.get("panchang", {}).get("sun_sign", "Unknown"),
                 "shaka_samvat": str(shaka_year),
                 "vikram_samvat": str(vikram_year),
                 "tithi": {
@@ -213,7 +217,7 @@ class GlobalPanchangAPIView(View):
                     "upto": tithi_upto
                 },
                 "nakshatra": {
-                    "name": raw_metrics.get("nakshatra", "Unknown"),
+                    "name": raw_metrics.get("panchang", {}).get("nakshatra", "Unknown"),
                     "upto": nakshatra_upto
                 },
                 "yoga": {
@@ -222,7 +226,7 @@ class GlobalPanchangAPIView(View):
                     "next": next_yoga
                 },
                 "karana": {
-                    "name": raw_metrics.get("karana", "Unknown"),
+                    "name": raw_metrics.get("panchang", {}).get("karana", "Unknown"),
                     "upto": karana_upto
                 },
                 "var": {

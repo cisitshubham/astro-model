@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  app:
+    container_name: astro-model-prod
+
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    command: >
+      sh -c " python manage.py migrate && gunicorn panchang_engine.wsgi:application --bind 0.0.0.0:8000 --workers 3 "
+
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    networks:
+      - traefik_default
+
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=traefik_default"
+      - "traefik.http.routers.astro-model.rule=Host(`engine.nakshatra.guru`)"
+      - "traefik.http.routers.astro-model.entrypoints=websecure"
+      - "traefik.http.routers.astro-model.tls=true"
+      - "traefik.http.routers.astro-model.tls.certresolver=myresolver"
+      - "traefik.http.services.astro-model.loadbalancer.server.port=8000"
+
+networks:
+  traefik_default:
+    external: true
