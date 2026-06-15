@@ -17,14 +17,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 8000
-
-CMD ["sh", "-c", "\
-    python manage.py migrate && \
-    python manage.py collectstatic --noinput && \
-    gunicorn astrology_platform.wsgi:application \
-    --bind 0.0.0.0:8000 \
-    --workers 3 \
-    --timeout 120 \
-    --access-logfile - \
-    --error-logfile - \
-    --log-level info"]
+CMD ["gunicorn", "astrology_platform.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "3"]
