@@ -66,4 +66,4 @@ Once running, you can test the Panchang API by visiting the endpoint.
 curl "http://127.0.0.1:8000/api/panchang/?date=2026-06-15&location=Mumbai"
 ```
 
-This will return a detailed JSON response featuring planetary placements, accurate astrological times, numerology metrics, and dynamically formatted Panchang data.
+This will return a detailed JSON response featuring planetary placements, accurate astrological times, numerology metrics, and dynamically formatted Panchang data.ss
