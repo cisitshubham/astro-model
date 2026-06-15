@@ -12,3 +12,4 @@ pytz==2026.2
 sqlparse==0.5.5
 timezonefinder==8.2.4
 python-dotenv==1.2.2
+gunicorn==24.0.0
