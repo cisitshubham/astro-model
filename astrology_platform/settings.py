@@ -23,12 +23,10 @@ DEBUG = os.getenv("DEBUG", "True").lower() == "true"
 # ]
 
 ALLOWED_HOSTS = [
-    host.strip()
-    for host in os.getenv(
-        "ALLOWED_HOSTS",
-        "engine.nakshatra.guru,localhost,127.0.0.1"
-    ).split(",")
-    if host.strip()
+    "engine.nakshatra.guru",
+    ".nakshatra.guru",
+    "localhost",
+    "127.0.0.1",
 ]
 
 # Applications
