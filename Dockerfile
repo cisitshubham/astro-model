@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# python manage.py runserver [IP_ADDRESS]
 EXPOSE 8000
 
 CMD ["gunicorn", "panchang_engine.wsgi:application", "--bind", "0.0.0.0:8000"]
