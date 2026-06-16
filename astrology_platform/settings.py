@@ -1,7 +1,5 @@
 import os
 from pathlib import Path
-
-# Load environment variables from .env
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -79,6 +77,8 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
+
+# ----- Added by Shubham for Docker Deployment -----
 
 # Internationalization
 LANGUAGE_CODE = 'en-us'
