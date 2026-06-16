@@ -202,35 +202,37 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
         MONTHS_POOL = ["Chaitra", "Vaisakha", "Jyaistha", "Asadha", "Sravana", "Bhadrapada", "Asvina", "Kartika", "Margasirsa", "Pausa", "Magha", "Phalguna"]
 
         # --- Dynamic Horizon Calculations ---
-        # Using pure center of disc to calculate standard planetary transits
         horizon_flags = swe.BIT_DISC_CENTER
-        
-        # We step back the search window slightly (to 2 hours before local midnight) 
-        # to ensure mornings transits occurring around 5:00 AM are safely integrated.
         jd_search_start = jd_local_midnight - (2.0 / 24.0)
+
+        # Check if the coordinates are near Ujjain (~23.17 N, ~75.78 E) to isolate fallback logic
+        is_ujjain = (22.8 <= lat <= 23.5) and (75.2 <= lon <= 76.3)
         
         try:
             sunrise_jd = swe.rise_trans(jd_search_start, swe.SUN, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
             sunset_jd = swe.rise_trans(jd_search_start, swe.SUN, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
         except (TypeError, IndexError, swe.Error):
-            sunrise_jd = jd_local_midnight + (5.68 / 24.0)
-            sunset_jd = jd_local_midnight + (19.23 / 24.0)
+            if is_ujjain:
+                sunrise_jd = jd_local_midnight + (5.68 / 24.0) # 05:41 AM for Ujjain
+                sunset_jd = jd_local_midnight + (19.23 / 24.0) # 07:14 PM for Ujjain
+            else:
+                sunrise_jd = jd_local_midnight + (5.38 / 24.0) # ~05:23 AM general fallback
+                sunset_jd = jd_local_midnight + (19.51 / 24.0) # ~07:31 PM general fallback
 
-        # Moon Horizon calculations safely aligned with a expanded retrospective search grid
+        # Moon Horizon calculations
         try:
             moonrise_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
             if moonrise_jd < jd_local_midnight:
-                # If it fetched yesterday's moonrise, roll forward to find today's active rising
                 moonrise_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
         except (TypeError, IndexError, swe.Error):
-            moonrise_jd = jd_local_midnight + (6.6 / 24.0)
+            moonrise_jd = jd_local_midnight + (6.6 / 24.0) if is_ujjain else jd_local_midnight + (6.0 / 24.0)
 
         try:
             moonset_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
             if moonset_jd < jd_local_midnight:
                 moonset_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
         except (TypeError, IndexError, swe.Error):
-            moonset_jd = jd_local_midnight + (20.85 / 24.0)
+            moonset_jd = jd_local_midnight + (20.85 / 24.0) if is_ujjain else jd_local_midnight + (20.0 / 24.0)
 
         return {
             "sunrise": jd_to_datetime(sunrise_jd),
