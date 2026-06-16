@@ -6,7 +6,8 @@ services:
       context: .
       dockerfile: Dockerfile
 
-    command: gunicorn astrology_platform.wsgi:application --bind 0.0.0.0:8000 --workers 3
+    command: >
+      gunicorn astrology_platform.wsgi:application --bind 0.0.0.0:8000 --workers 3 --access-logfile - --error-logfile - --capture-output --log-level info
 
     restart: always
 
@@ -20,13 +21,12 @@ services:
       - "traefik.enable=true"
       - "traefik.docker.network=root_default"
 
-      - "traefik.http.routers.astro-model.rule=Host(`engine.nakshatra.guru`)"
-      - "traefik.http.routers.astro-model.entrypoints=websecure"
-      - "traefik.http.routers.astro-model.tls=true"
-      - "traefik.http.routers.astro-model.tls.certresolver=mytlschallenge"
-
-      - "traefik.http.services.astro-model.loadbalancer.server.port=8000"
-      - "traefik.http.services.astro-model.loadbalancer.passhostheader=true"
+      - "traefik.http.routers.astro-model-prod.rule=Host(`engine.nakshatra.guru`)"
+      - "traefik.http.routers.astro-model-prod.entrypoints=websecure"
+      - "traefik.http.routers.astro-model-prod.tls=true"
+      - "traefik.http.routers.astro-model-prod.tls.certresolver=mytlschallenge"
+      - "traefik.http.services.astro-model-prod.loadbalancer.server.port=8000"
+      - "traefik.http.services.astro-model-prod.loadbalancer.passhostheader=true"
 
 networks:
   root_default:
