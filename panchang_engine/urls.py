@@ -3,7 +3,8 @@ from .views import (
     GlobalPanchangAPIView, 
     GlobalTransitsAPIView, 
     GlobalCelestialAPIView,
-    GlobalNumerologyAPIView
+    GlobalNumerologyAPIView,
+    GlobalHoroscopeAPIView
 )
 
 urlpatterns = [
@@ -18,4 +19,7 @@ urlpatterns = [
     
     # 4. Pure Date-driven Numerology Matrix (Algorithmic 1-9 Daily Narrative Shuffler)
     path('api/numerology/', GlobalNumerologyAPIView.as_view(), name='global_numerology_api'),
+    
+    # 5 Horoscope
+    path('api/horoscope/', GlobalHoroscopeAPIView.as_view(), name='global_horoscope_api'),
 ]
