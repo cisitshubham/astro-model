@@ -1,0 +1,15 @@
+asgiref==3.11.1
+cffi==2.0.0
+Django==6.0.6
+flatbuffers==25.12.19
+geographiclib==2.1
+geopy==2.4.1
+h3==4.5.0
+numpy==2.4.6
+pycparser==3.0
+pyswisseph==2.10.3.2
+pytz==2026.2
+sqlparse==0.5.5
+timezonefinder==8.2.4
+python-dotenv==1.2.2
+gunicorn==24.0.0
