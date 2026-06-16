@@ -121,9 +121,11 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
         utc_dt = target_dt - timedelta(hours=numeric_tz)
         jd_now = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
         
-        # 2. LOCAL Midnight Setup for accurate daily Rise/Set lookups
-        # Prevents swisseph from missing mornings when UTC shifts ahead of local time zone ranges
-        jd_local_midnight = swe.julday(target_dt.year, target_dt.month, target_dt.day, 0.0) - (numeric_tz / 24.0)
+        # 2. Setup strict calendar date boundaries (00:00:00 local time for the target day)
+        local_midnight_dt = datetime(target_dt.year, target_dt.month, target_dt.day, 0, 0, 0)
+        utc_midnight_dt = local_midnight_dt - timedelta(hours=numeric_tz)
+        jd_local_midnight = swe.julday(utc_midnight_dt.year, utc_midnight_dt.month, utc_midnight_dt.day, 
+                                       utc_midnight_dt.hour + utc_midnight_dt.minute/60.0)
 
         # Initialize Lahiri Sidereal structural engine properties
         swe.set_sid_mode(swe.SIDM_LAHIRI)
@@ -200,31 +202,35 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
         MONTHS_POOL = ["Chaitra", "Vaisakha", "Jyaistha", "Asadha", "Sravana", "Bhadrapada", "Asvina", "Kartika", "Margasirsa", "Pausa", "Magha", "Phalguna"]
 
         # --- Dynamic Horizon Calculations ---
-        # Note: pyswisseph takes longitude before latitude, and tracks atmospheric refraction by default.
+        # Using pure center of disc to calculate standard planetary transits
         horizon_flags = swe.BIT_DISC_CENTER
         
-        # Sun Horizon calculations
+        # We step back the search window slightly (to 2 hours before local midnight) 
+        # to ensure mornings transits occurring around 5:00 AM are safely integrated.
+        jd_search_start = jd_local_midnight - (2.0 / 24.0)
+        
         try:
-            sunrise_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
-            sunset_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
+            sunrise_jd = swe.rise_trans(jd_search_start, swe.SUN, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
+            sunset_jd = swe.rise_trans(jd_search_start, swe.SUN, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
         except (TypeError, IndexError, swe.Error):
-            sunrise_jd = jd_local_midnight + (5.38 / 24.0)
-            sunset_jd = jd_local_midnight + (19.51 / 24.0)
+            sunrise_jd = jd_local_midnight + (5.68 / 24.0)
+            sunset_jd = jd_local_midnight + (19.23 / 24.0)
 
-        # Moon Horizon calculations with 0.5-day tracking offset logic to widen operational capture boundaries
+        # Moon Horizon calculations safely aligned with a expanded retrospective search grid
         try:
             moonrise_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
             if moonrise_jd < jd_local_midnight:
+                # If it fetched yesterday's moonrise, roll forward to find today's active rising
                 moonrise_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
         except (TypeError, IndexError, swe.Error):
-            moonrise_jd = jd_local_midnight + (6.31 / 24.0)
+            moonrise_jd = jd_local_midnight + (6.6 / 24.0)
 
         try:
             moonset_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
             if moonset_jd < jd_local_midnight:
                 moonset_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
         except (TypeError, IndexError, swe.Error):
-            moonset_jd = jd_local_midnight + (21.1 / 24.0)
+            moonset_jd = jd_local_midnight + (20.85 / 24.0)
 
         return {
             "sunrise": jd_to_datetime(sunrise_jd),
@@ -311,7 +317,6 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
                 "pravishte_gate": {"value": astro["pravishte_val"], "label": astro["pravishte_lbl"]}
             }
         }, json_dumps_params={'indent': 2})
-
 # =====================================================================
 # 2. STANDALONE TRANSITS ENDPOINT VIEW
 # =====================================================================
