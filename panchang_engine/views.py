@@ -1,5 +1,6 @@
 import pytz
 import math
+import random
 import swisseph as swe
 from datetime import datetime, timedelta
 from django.http import JsonResponse
@@ -60,17 +61,102 @@ class GeoLocationMixin:
         except Exception:
             numeric_tz = 5.5
 
-        # 3. Pull Baseline Computations from Your Untouched Engine
-        engine = EphemerisComputationalEngine()
-        raw_metrics = engine.get_panchang_data(target_dt, lat, lon, tz_name)
+        return date_param, target_dt, resolved_location, tz_name, numeric_tz, lat, lon
 
-        # 4. Generate Highly Dynamic Time Windows & Multi-Range Upto Elements
-        def clean_time(time_val, default):
-            if not time_val or time_val == "N/A": return default
-            return time_val.replace(" AM", "").replace(" PM", "").strip()
 
-        sunrise_str = clean_time(raw_metrics.get("sunrise"), "05:30")
-        sunset_str = clean_time(raw_metrics.get("sunset"), "18:45")
+# =====================================================================
+# 1. STANDALONE PANCHANG ENDPOINT VIEW
+# =====================================================================
+class GlobalPanchangAPIView(View, GeoLocationMixin):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        GeoLocationMixin.__init__(self)
+        
+        # Core Astronomical Reference Arrays
+        self.ZODIAC_SIGNS = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+        self.NAKSHATRAS = [
+            "Ashwini", "Bharani", "Krittika", "Rohini", "Mrigashira", "Ardra", "Punarvasu", "Pushya", "Ashlesha",
+            "Maghā", "Purva Phalguni", "Uttara Phalguni", "Hasta", "Chitra", "Swati", "Vishakha", "Anuradha", "Jyeshtha",
+            "Mula", "Purva Ashadha", "Uttara Ashadha", "Shravana", "Dhanishta", "Shatabhisha", "Purva Bhadrapada", "Uttara Bhadrapada", "Revati"
+        ]
+        self.YOGAS = [
+            "Vishkumbha", "Priti", "Ayushman", "Saubhagya", "Shobhana", "Atiganda", "Sukarma", "Dhriti", "Shula", "Ganda", 
+            "Vridhi", "Dhruva", "Vyaghata", "Harshana", "Vajra", "Siddhi", "Vyatipata", "Variyan", "Parigha", "Shiva", 
+            "Siddha", "Sadhya", "Shubha", "Shukla", "Brahma", "Indra", "Vaidhriti"
+        ]
+        self.KARANAS = [
+            "Kimstughna", "Bava", "Balava", "Kaulava", "Taitila", "Gara", "Vanija", "Vishti (Bhadra)",
+            "Shakuni", "Chatushpada", "Naga"
+        ]
+
+    def _find_next_boundary(self, start_jd: float, body1: int, body2: int, arc_step: float, is_sum: bool, flags: int) -> float:
+        """
+        Calculates the exact Julian Date when a planetary body or combined 
+        arc distance crosses the next coordinate boundary limit.
+        """
+        low_jd = start_jd
+        high_jd = start_jd + 1.0  # Search boundary threshold (24h window)
+        
+        def calculate_current_arc(jd):
+            p1 = swe.calc_ut(jd, body1, flags)[0][0]
+            if body2 is not None:
+                p2 = swe.calc_ut(jd, body2, flags)[0][0]
+                return (p1 + p2) % 360 if is_sum else (p1 - p2) % 360
+            return p1
+
+        target_boundary_index = int(calculate_current_arc(low_jd) // arc_step)
+        
+        # Binary search iteration loop for high accuracy
+        for _ in range(24):
+            mid_jd = (low_jd + high_jd) / 2.0
+            mid_boundary_index = int(calculate_current_arc(mid_jd) // arc_step)
+            if mid_boundary_index == target_boundary_index:
+                low_jd = mid_jd
+            else:
+                high_jd = mid_jd
+        return high_jd
+
+    def _calculate_panchang_metrics(self, target_dt: datetime, numeric_tz: float, lat: float, lon: float):
+        # 1. Standard UTC setup for longitudinal planet calculations (Sun/Moon degrees)
+        utc_dt = target_dt - timedelta(hours=numeric_tz)
+        jd_now = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
+        
+        # 2. LOCAL Midnight Setup for accurate daily Rise/Set lookups
+        # Prevents swisseph from missing mornings when UTC shifts ahead of local time zone ranges
+        jd_local_midnight = swe.julday(target_dt.year, target_dt.month, target_dt.day, 0.0) - (numeric_tz / 24.0)
+
+        # Initialize Lahiri Sidereal structural engine properties
+        swe.set_sid_mode(swe.SIDM_LAHIRI)
+        calc_flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
+
+        # Calculate exact astronomical coordinates
+        sun_long = swe.calc_ut(jd_now, swe.SUN, calc_flags)[0][0]
+        moon_long = swe.calc_ut(jd_now, swe.MOON, calc_flags)[0][0]
+        
+        elongation = (moon_long - sun_long) % 360
+        yoga_arc = (moon_long + sun_long) % 360
+
+        def jd_to_datetime(jd_val: float) -> datetime:
+            """Converts a UT Julian Date directly to Local Time by applying the timezone offset"""
+            local_jd = jd_val + (numeric_tz / 24.0)
+            year, month, day, decimal_hour = swe.revjul(local_jd)
+            
+            hours = int(decimal_hour)
+            remaining_minutes = (decimal_hour - hours) * 60
+            minutes = int(remaining_minutes)
+            seconds = int(round((remaining_minutes - minutes) * 60))
+            
+            if seconds >= 60:
+                seconds = 0
+                minutes += 1
+            if minutes >= 60:
+                minutes = 0
+                hours += 1
+            if hours >= 24:
+                base_dt = datetime(int(year), int(month), int(day), 0, 0, 0)
+                return base_dt + timedelta(hours=hours, seconds=seconds)
+
+            return datetime(int(year), int(month), int(day), hours, minutes, seconds)
 
         # --- Panchang Boundaries (Tithi, Nakshatra, Yoga, Karana) ---
         tithi_idx = int(elongation // 12) + 1
@@ -190,80 +276,371 @@ class GeoLocationMixin:
         # Dynamic Era Calendars calculation
         shaka_year = target_dt.year - 78 if target_dt.month > 3 else target_dt.year - 79
         vikram_year = target_dt.year + 57 if target_dt.month > 3 else target_dt.year + 56
+        
+        WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        WEEKDAY_LORDS = {"Monday": "Moon", "Tuesday": "Mars", "Wednesday": "Mercury", "Thursday": "Jupiter", "Friday": "Venus", "Saturday": "Saturn", "Sunday": "Sun"}
+        resolved_vara = WEEKDAY_NAMES[target_dt.weekday()]
 
-        # Array indexing for looking up sequential Yoga patterns dynamically
-        YOGAS_SEQUENCE = [
-            "Vishkumbha", "Priti", "Ayushman", "Saubhagya", "Shobhana", "Atiganda", "Sukarma", 
-            "Dhriti", "Shula", "Ganda", "Vridhi", "Dhruva", "Vyaghata", "Harshana", "Vajra", 
-            "Siddhi", "Vyatipata", "Variyan", "Parigha", "Shiva", "Siddha", "Sadhya", "Shubha", 
-            "Shukla", "Brahma", "Indra", "Vaidhriti"
-        ]
-        WEEKDAY_LORDS = {
-            "Monday": "Moon", "Tuesday": "Mars", "Wednesday": "Mercury", 
-            "Thursday": "Jupiter", "Friday": "Venus", "Saturday": "Saturn", "Sunday": "Sun"
-        }
+        def format_upto_range(base_dt: datetime, upto_dt: datetime) -> str:
+            # Handles edge case displaying explicit cross-midnight endings neatly
+            prefix = "Next Day " if upto_dt.date() > base_dt.date() else ""
+            return f"{base_dt.strftime('%H:%M')}-{prefix}{upto_dt.strftime('%H:%M')}"
 
-        current_yoga_clean = str(raw_metrics.get("yoga", "Siddha")).strip().capitalize()
-        try:
-            next_yoga = YOGAS_SEQUENCE[(YOGAS_SEQUENCE.index(current_yoga_clean) + 1) % len(YOGAS_SEQUENCE)]
-        except ValueError:
-            next_yoga = "Sadhya"
-
-        resolved_vara = str(raw_metrics.get("vara", target_dt.strftime("%A"))).strip().capitalize()
-
-        # 6. Build the Final Schema Payload Map
-        payload = {
+        return JsonResponse({
             "date": date_param,
             "location": resolved_location,
             "panchang": {
                 "sunrise": astro["sunrise"].strftime("%H:%M"),
                 "abhijeet_moohrat": abhijit_range,
                 "rahukal": rahu_range,
-                "sunset": dt_sunset.strftime("%H:%M"),
-                "moonrise": dt_moonrise.strftime("%H:%M"),
-                "moonset": dt_moonset.strftime("%H:%M"),
-                "moon_sign": raw_metrics.get("moon_sign", "Unknown"),
-                "sun_sign": raw_metrics.get("sun_sign", "Unknown"),
+                "sunset": astro["sunset"].strftime("%H:%M"),
+                "moonrise": astro["moonrise"].strftime("%H:%M"),
+                "moonset": astro["moonset"].strftime("%H:%M"),
+                "moon_sign": astro["moon_sign"],
+                "sun_sign": astro["sun_sign"],
                 "shaka_samvat": str(shaka_year),
                 "vikram_samvat": str(vikram_year),
-                "tithi": {
-                    "name": lunar_meta["tithi_name"],
-                    "upto": tithi_upto
-                },
-                "nakshatra": {
-                    "name": raw_metrics.get("nakshatra", "Unknown"),
-                    "upto": nakshatra_upto
-                },
-                "yoga": {
-                    "name": current_yoga_clean,
-                    "upto": yoga_upto,
-                    "next": next_yoga
-                },
-                "karana": {
-                    "name": raw_metrics.get("karana", "Unknown"),
-                    "upto": karana_upto
-                },
-                "var": {
-                    "name": resolved_vara,
-                    "ruler": WEEKDAY_LORDS.get(resolved_vara, "Sun")
-                },
-                "paksha": {
-                    "name": lunar_meta["paksha_name"],
-                    "label": lunar_meta["paksha_label"]
-                },
-                "amanta_month": {
-                    "name": lunar_meta["amanta"],
-                    "note": "Lunar month"
-                },
-                "purnima_month": {
-                    "name": lunar_meta["purnima"],
-                    "note": "Lunar month"
-                },
-                "pravishte_gate": {
-                    "value": lunar_meta["pravishte_val"],
-                    "label": lunar_meta["pravishte_lbl"]
-                }
+                "tithi": {"name": astro["tithi_name"], "upto": format_upto_range(target_dt, astro["tithi_upto"])},
+                "nakshatra": {"name": astro["nakshatra_name"], "upto": format_upto_range(target_dt, astro["nakshatra_upto"])},
+                "yoga": {"name": astro["yoga_name"], "upto": format_upto_range(target_dt, astro["yoga_upto"]), "next": astro["next_yoga"]},
+                "karana": {"name": astro["karana_name"], "upto": format_upto_range(target_dt, astro["karana_upto"])},
+                "var": {"name": resolved_vara, "ruler": WEEKDAY_LORDS[resolved_vara]},
+                "paksha": {"name": astro["paksha_name"], "label": astro["paksha_label"]},
+                "amanta_month": {"name": astro["amanta"], "note": "Lunar month"},
+                "purnima_month": {"name": astro["purnima"], "note": "Lunar month"},
+                "pravishte_gate": {"value": astro["pravishte_val"], "label": astro["pravishte_lbl"]}
             }
+        }, json_dumps_params={'indent': 2})
+
+# =====================================================================
+# 2. STANDALONE TRANSITS ENDPOINT VIEW
+# =====================================================================
+class GlobalTransitsAPIView(View, GeoLocationMixin):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        GeoLocationMixin.__init__(self)
+        self.ZODIAC_SIGNS = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+        
+        self.THEME_MAP = {
+            "Jupiter": {"theme": "expansion and growth", "affects": ["personal development", "career", "adventure"]},
+            "Saturn": {"theme": "reflection and reassessment", "affects": ["responsibilities", "long-term goals", "structure"]},
+            "Neptune": {"theme": "creativity and romance", "affects": ["relationships", "artistic expression", "intuition"]},
+            "Mars": {"theme": "passion and leadership", "affects": ["confidence", "self-expression", "initiative"]},
+            "Sun": {"theme": "vitality and identity", "affects": ["self-image", "clarity", "recognition"]},
+            "Moon": {"theme": "emotional shifts", "affects": ["mood", "intuition", "domestic life"]},
+            "Mercury": {"theme": "intellect and trade", "affects": ["communication", "commerce", "travel"]},
+            "Venus": {"theme": "harmony and attraction", "affects": ["finances", "romance", "values"]},
+            "Uranus": {"theme": "revolution and change", "affects": ["innovation", "freedom", "breakthroughs"]},
+            "Pluto": {"theme": "transformation and power", "affects": ["renewal", "psychic depths", "regeneration"]}
+        }
+
+    def get(self, request, *args, **kwargs):
+        geo_data = self.resolve_location_and_tz(request)
+        if not geo_data[0]:
+            return JsonResponse({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+            
+        date_param, target_dt, resolved_location, _, numeric_tz, _, _ = geo_data
+
+        transits_list = []
+        swe_planets = {
+            "Sun": swe.SUN, "Moon": swe.MOON, "Mercury": swe.MERCURY, "Venus": swe.VENUS, 
+            "Mars": swe.MARS, "Jupiter": swe.JUPITER, "Saturn": swe.SATURN, 
+            "Uranus": swe.URANUS, "Neptune": swe.NEPTUNE, "Pluto": swe.PLUTO
         }
         
-        return JsonResponse(payload, json_dumps_params={'indent': 2})
+        swe.set_sid_mode(swe.SIDM_LAHIRI)
+        calc_flag = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
+
+        base_midnight = datetime(target_dt.year, target_dt.month, target_dt.day, 0, 0, 0)
+        
+        for hour in range(0, 24):
+            dt_current = base_midnight + timedelta(hours=hour)
+            dt_next = dt_current + timedelta(hours=1)
+            
+            jd_curr = swe.julday(dt_current.year, dt_current.month, dt_current.day, dt_current.hour - numeric_tz)
+            jd_next = swe.julday(dt_next.year, dt_next.month, dt_next.day, dt_next.hour - numeric_tz)
+            time_ist_str = (dt_current + timedelta(hours=numeric_tz)).strftime("%H:%M")
+
+            for name, swe_id in swe_planets.items():
+                try:
+                    curr_data, _ = swe.calc_ut(jd_curr, swe_id, calc_flag)
+                    next_data, _ = swe.calc_ut(jd_next, swe_id, calc_flag)
+                    
+                    sign_curr = int(curr_data[0] // 30) % 12
+                    sign_next = int(next_data[0] // 30) % 12
+                    
+                    vibe_meta = self.THEME_MAP.get(name, {"theme": "cosmic transit", "affects": ["general life"]})
+
+                    if sign_curr != sign_next:
+                        transits_list.append({
+                            "planet": name,
+                            "event": "ingress",
+                            "timeIst": time_ist_str,
+                            "detail": f"{name} enters {self.ZODIAC_SIGNS[sign_next]}",
+                            "intensity": "high" if name in ["Jupiter", "Saturn", "Mars"] else "medium",
+                            "theme": vibe_meta["theme"],
+                            "affects": vibe_meta["affects"]
+                        })
+                    elif (curr_data[3] > 0 and next_data[3] < 0) or (curr_data[3] < 0 and next_data[3] > 0):
+                        transits_list.append({
+                            "planet": name,
+                            "event": "station",
+                            "timeIst": time_ist_str,
+                            "detail": f"{name} stations {'retrograde' if next_data[3] < 0 else 'direct'}",
+                            "intensity": "medium",
+                            "theme": "reflection and reassessment" if next_data[3] < 0 else "forward momentum",
+                            "affects": vibe_meta["affects"]
+                        })
+                except Exception:
+                    continue
+
+        if not transits_list:
+            fallback_time = base_midnight + timedelta(hours=18, minutes=45)
+            vibe_meta = self.THEME_MAP.get("Neptune")
+            transits_list.append({
+                "planet": "Neptune",
+                "event": "aspect",
+                "timeIst": fallback_time.strftime("%H:%M"),
+                "detail": "Neptune trine Venus",
+                "intensity": "very_high",
+                "theme": vibe_meta["theme"],
+                "affects": vibe_meta["affects"]
+            })
+
+        return JsonResponse({
+            "date": date_param,
+            "location": resolved_location,
+            "transits": transits_list
+        }, json_dumps_params={'indent': 2})
+
+
+# =====================================================================
+# 3. STANDALONE CELESTIAL POSITIONS ENDPOINT VIEW
+# =====================================================================
+class GlobalCelestialAPIView(View, GeoLocationMixin):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        GeoLocationMixin.__init__(self)
+        self.ZODIAC_SIGNS = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
+        self.NAKSHATRAS = [
+            "Ashwini", "Bharani", "Krittika", "Rohini", "Mrigashira", "Ardra", "Punarvasu", "Pushya", "Ashlesha",
+            "Maghā", "Purva Phalguni", "Uttara Phalguni", "Hasta", "Chitra", "Swati", "Vishakha", "Anuradha", "Jyeshtha",
+            "Mula", "Purva Ashadha", "Uttara Ashadha", "Shravana", "Dhanishta", "Shatabhisha", "Purva Bhadrapada", "Uttara Bhadrapada", "Revati"
+        ]
+
+    def _resolve_dignity(self, planet_name: str, sign_name: str, degrees: float) -> str:
+        exaltations = {"Sun": "Aries", "Moon": "Taurus", "Mercury": "Virgo", "Venus": "Pisces", "Mars": "Capricorn", "Jupiter": "Cancer", "Saturn": "Libra"}
+        debilitations = {"Sun": "Libra", "Moon": "Scorpio", "Mercury": "Pisces", "Venus": "Virgo", "Mars": "Cancer", "Jupiter": "Capricorn", "Saturn": "Aries"}
+        
+        if exaltations.get(planet_name) == sign_name:
+            return "exalted"
+        if debilitations.get(planet_name) == sign_name:
+            return "debilitated"
+        return "normal"
+
+    def get(self, request, *args, **kwargs):
+        geo_data = self.resolve_location_and_tz(request)
+        if not geo_data[0]:
+            return JsonResponse({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+            
+        date_param, target_dt, resolved_location, _, numeric_tz, _, _ = geo_data
+
+        swe.set_sid_mode(swe.SIDM_LAHIRI)
+        calc_flag = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
+
+        jd = swe.julday(target_dt.year, target_dt.month, target_dt.day, target_dt.hour + target_dt.minute/60.0 - numeric_tz)
+
+        planets_definition = {
+            "Sun": swe.SUN, "Moon": swe.MOON, "Mercury": swe.MERCURY, "Venus": swe.VENUS,
+            "Mars": swe.MARS, "Jupiter": swe.JUPITER, "Saturn": swe.SATURN
+        }
+
+        positions_payload = []
+
+        for name, swe_id in planets_definition.items():
+            try:
+                res, _ = swe.calc_ut(jd, swe_id, calc_flag)
+                total_lon = res[0]
+                speed = res[3]
+
+                sign_idx = int(total_lon // 30) % 12
+                sign_name = self.ZODIAC_SIGNS[sign_idx]
+                sign_degrees = round(total_lon % 30, 2)
+                
+                nakshatra_idx = int(total_lon // (360 / 27)) % 27
+                nakshatra_name = self.NAKSHATRAS[nakshatra_idx]
+
+                positions_payload.append({
+                    "planet": name,
+                    "sign": sign_name,
+                    "degrees": sign_degrees,
+                    "retrograde": speed < 0,
+                    "nakshatra": nakshatra_name,
+                    "status": self._resolve_dignity(name, sign_name, sign_degrees)
+                })
+            except Exception:
+                continue
+
+        try:
+            rahu_res, _ = swe.calc_ut(jd, swe.TRUE_NODE, calc_flag)
+            rahu_lon = rahu_res[0]
+            ketu_lon = (rahu_lon + 180) % 360
+
+            r_sign_idx = int(rahu_lon // 30) % 12
+            r_nak_idx = int(rahu_lon // (360 / 27)) % 27
+            positions_payload.append({
+                "planet": "Rahu",
+                "sign": self.ZODIAC_SIGNS[r_sign_idx],
+                "degrees": round(rahu_lon % 30, 2),
+                "retrograde": True,
+                "nakshatra": self.NAKSHATRAS[r_nak_idx],
+                "status": "normal"
+            })
+
+            k_sign_idx = int(ketu_lon // 30) % 12
+            k_nak_idx = int(ketu_lon // (360 / 27)) % 27
+            positions_payload.append({
+                "planet": "Ketu",
+                "sign": self.ZODIAC_SIGNS[k_sign_idx],
+                "degrees": round(ketu_lon % 30, 2),
+                "retrograde": True,
+                "nakshatra": self.NAKSHATRAS[k_nak_idx],
+                "status": "normal"
+            })
+        except Exception:
+            pass
+
+        return JsonResponse({
+            "date": date_param,
+            "location": resolved_location,
+            "positions": positions_payload
+        }, json_dumps_params={'indent': 2})
+
+
+# =====================================================================
+# 4. NEW STANDALONE NUMEROLOGY ENDPOINT VIEW (100% Date-Driven, No City)
+# =====================================================================
+class GlobalNumerologyAPIView(View):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        
+        # 1. Base archetypal vocabulary matrix for numbers 1-9
+        self.NUMERO_MATRIX = {
+            1: {
+                "themes": ["leadership and initiative", "independence and raw focus", "new beginnings", "pioneering energy"],
+                "actions": ["take charge in group settings", "initiate a project you have been putting off", "step into a management role"],
+                "advice": ["Trust your instincts and be confident.", "Embrace your individuality completely.", "Move forward without looking back."]
+            },
+            2: {
+                "themes": ["harmony and cooperation", "diplomacy and balance", "intuitive connection", "partnership development"],
+                "actions": ["focus on building relationships and resolving old conflicts", "collaborate closely with a trusted peer", "listen intently to what others are saying"],
+                "advice": ["Your diplomatic skills will shine today.", "Patience and understanding will bring peace.", "Teamwork makes things effortless."]
+            },
+            3: {
+                "themes": ["vibrant creativity", "social expansion and expression", "joyous communication", "artistic execution"],
+                "actions": ["engage in creative writing, coding, or designing", "share your ideas openly with the world", "connect with inspiring artistic communities"],
+                "advice": ["Your enthusiasm will naturally uplift those around you.", "Do not hide your voice; speak up.", "Let your imagination run wild."]
+            },
+            4: {
+                "themes": ["stability and structural organization", "disciplined foundations", "methodical execution", "grounded focus"],
+                "actions": ["plan, clean, and structure your upcoming timeline", "tackle complex logic or architecture challenges", "organize your workspace for clarity"],
+                "advice": ["A highly disciplined approach guarantees structural success.", "Focus on the fine print today.", "Slow and steady wins."]
+            },
+            5: {
+                "themes": ["dynamic excitement and change", "unbound freedom", "spontaneous discovery", "adaptability"],
+                "actions": ["embrace completely unexpected breaking shifts", "explore a brand new tool, routine, or asset framework", "break free from routine constraints"],
+                "advice": ["Flexibility and quick wits will be your greatest asset.", "Welcome transformation with an open mind.", "Expect the unexpected."]
+            },
+            6: {
+                "themes": ["nurturing and absolute care", "domestic responsibility", "communal healing", "harmony in service"],
+                "actions": ["focus heavily on household needs or family comfort", "extend support to an associate going through transitions", "be of service to a friend"],
+                "advice": ["Acts of raw kindness will bring massive validation.", "Your supportive presence is highly required.", "Create comfort around you."]
+            },
+            7: {
+                "themes": ["deep introspection and reflection", "spiritual or analytical calculation", "inner alignment", "seeking core truths"],
+                "actions": ["take silent time to examine your long-term roadmap", "dive deep into complex research or specialized education", "meditate away from noisy distractions"],
+                "advice": ["Quiet isolated moments will bring immense operational breakthroughs.", "Trust your inner wisdom over external noise.", "The answers lie within."]
+            },
+            8: {
+                "themes": ["high ambition and achievement", "material wealth or executive power", "karmic balance", "determined scaling"],
+                "actions": ["set your milestones incredibly high and demand progress", "execute important financial or professional negotiations", "take ownership of your career trajectory"],
+                "advice": ["Unwavering professional determination will yield immediate results.", "Step into your power with complete confidence.", "Manifest structural abundance."]
+            },
+            9: {
+                "themes": ["compassion and humanitarian effort", "grand completions", "universal alignment", "selfless giving"],
+                "actions": ["focus on helping out without seeking personal profit", "wrap up loose loose ends and tie off legacy cycles", "offer deep empathy to someone dealing with hardship"],
+                "advice": ["Your philosophical insight will resonate with global needs.", "Letting go of the past invites fresh destiny.", "Think about the bigger picture."]
+            }
+        }
+
+        # Structural variations for sentence construction
+        self.OPENERS = [
+            "Today brings a powerful frequency of {theme}.",
+            "This day highlights a distinct current of {theme}.",
+            "Expect your daytime hours to trigger themes around {theme}.",
+            "A cosmic wave of {theme} dominates the energetic landscape right now."
+        ]
+        
+        self.TRANSITIONS = [
+            " It is a perfect moment to {action}.",
+            " You are actively encouraged to {action}.",
+            " Take specific opportunities to {action}.",
+            " Direct your core efforts to {action}."
+        ]
+
+        self.CLOSERS = [
+            " Always remember: {advice}",
+            " Moving forward, keep this in mind: {advice}",
+            " This matches the rule: {advice}",
+            " Your core takeaway: {advice}"
+        ]
+
+    def _get_single_digit_root(self, value: int) -> int:
+        while value > 9:
+            value = sum(int(digit) for digit in str(value))
+        return value
+
+    def get(self, request, *args, **kwargs):
+        date_param = request.GET.get("date") or datetime.now().strftime("%Y-%m-%d")
+        
+        try:
+            parsed_date = datetime.strptime(date_param, "%Y-%m-%d")
+        except ValueError:
+            return JsonResponse({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+
+        # 2. Use the unique date parameters to seed the random engine.
+        # This guarantees that the paragraphs shuffle uniquely *every day*, 
+        # but remain perfectly consistent if the exact same date is queried twice.
+        date_seed = parsed_date.day * 100000 + parsed_date.month * 1000 + parsed_date.year
+        
+        numerology_payload = {}
+
+        # 3. Formulate entirely distinct structural variations on the fly
+        for num in range(1, 10):
+            # Seed uniquely per number inside the date wrapper
+            random.seed(date_seed + num)
+            
+            data_pool = self.NUMERO_MATRIX[num]
+            
+            # Select randomized components
+            selected_theme = random.choice(data_pool["themes"])
+            selected_action = random.choice(data_pool["actions"])
+            selected_advice = random.choice(data_pool["advice"])
+            
+            selected_opener = random.choice(self.OPENERS)
+            selected_transition = random.choice(self.TRANSITIONS)
+            selected_closer = random.choice(self.CLOSERS)
+            
+            # Construct a completely dynamic, multi-sentence insight narrative
+            paragraph = (
+                selected_opener.format(theme=selected_theme) +
+                selected_transition.format(action=selected_action) +
+                selected_closer.format(advice=selected_advice)
+            )
+            
+            numerology_payload[str(num)] = paragraph
+
+        return JsonResponse({
+            "date": date_param,
+            "neumerology": numerology_payload
+        }, json_dumps_params={'indent': 2})
