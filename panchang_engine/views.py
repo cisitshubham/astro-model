@@ -11,6 +11,15 @@ from timezonefinder import TimezoneFinder
 # Import your untouched engine logic safely
 from panchang_engine.engine import EphemerisComputationalEngine
 
+def sanitize_missing_values(data):
+    if isinstance(data, dict):
+        return {k: sanitize_missing_values(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_missing_values(x) for x in data]
+    elif data is None or data == "" or data == "N/A" or data == "unknown" or data == "Unknown":
+        return "-"
+    return data
+
 # =====================================================================
 # GLOBAL GEOLOCATION MIXIN (Shared Framework across Endpoint Classes)
 # =====================================================================
@@ -279,60 +288,66 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
             
         date_param, target_dt, resolved_location, tz_name, numeric_tz, lat, lon = geo_data
 
-        # Compute dynamic metrics directly from the core ephemeris engine
-        astro = self._calculate_panchang_metrics(target_dt, numeric_tz, lat, lon)
+        try:
+            # Compute dynamic metrics directly from the core ephemeris engine
+            astro = self._calculate_panchang_metrics(target_dt, numeric_tz, lat, lon)
 
-        # Dynamic Muhurat ranges derived directly from actual sunrise/sunset timings
-        day_length_sec = (astro["sunset"] - astro["sunrise"]).total_seconds()
-        part_duration = day_length_sec / 8
+            # Dynamic Muhurat ranges derived directly from actual sunrise/sunset timings
+            day_length_sec = (astro["sunset"] - astro["sunrise"]).total_seconds()
+            part_duration = day_length_sec / 8
 
-        def make_range_string(base_time: datetime, offset_sec: float, duration_sec: float) -> str:
-            start = base_time + timedelta(seconds=offset_sec)
-            end = start + timedelta(seconds=duration_sec)
-            return f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
+            def make_range_string(base_time: datetime, offset_sec: float, duration_sec: float) -> str:
+                start = base_time + timedelta(seconds=offset_sec)
+                end = start + timedelta(seconds=duration_sec)
+                return f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
 
-        abhijit_range = make_range_string(astro["sunrise"], (day_length_sec / 2) - 1440, 2880)
-        rahu_parts_mapping = {0: 1, 1: 6, 2: 4, 3: 5, 4: 3, 5: 2, 6: 7}
-        rahu_range = make_range_string(astro["sunrise"], part_duration * rahu_parts_mapping.get(target_dt.weekday(), 1), part_duration)
+            abhijit_range = make_range_string(astro["sunrise"], (day_length_sec / 2) - 1440, 2880)
+            rahu_parts_mapping = {0: 1, 1: 6, 2: 4, 3: 5, 4: 3, 5: 2, 6: 7}
+            rahu_range = make_range_string(astro["sunrise"], part_duration * rahu_parts_mapping.get(target_dt.weekday(), 1), part_duration)
 
-        # Dynamic Era Calendars calculation
-        shaka_year = target_dt.year - 78 if target_dt.month > 3 else target_dt.year - 79
-        vikram_year = target_dt.year + 57 if target_dt.month > 3 else target_dt.year + 56
-        
-        WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        WEEKDAY_LORDS = {"Monday": "Moon", "Tuesday": "Mars", "Wednesday": "Mercury", "Thursday": "Jupiter", "Friday": "Venus", "Saturday": "Saturn", "Sunday": "Sun"}
-        resolved_vara = WEEKDAY_NAMES[target_dt.weekday()]
+            # Dynamic Era Calendars calculation
+            shaka_year = target_dt.year - 78 if target_dt.month > 3 else target_dt.year - 79
+            vikram_year = target_dt.year + 57 if target_dt.month > 3 else target_dt.year + 56
+            
+            WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            WEEKDAY_LORDS = {"Monday": "Moon", "Tuesday": "Mars", "Wednesday": "Mercury", "Thursday": "Jupiter", "Friday": "Venus", "Saturday": "Saturn", "Sunday": "Sun"}
+            resolved_vara = WEEKDAY_NAMES[target_dt.weekday()]
 
-        def format_upto_range(base_dt: datetime, upto_dt: datetime) -> str:
-            # Handles edge case displaying explicit cross-midnight endings neatly
-            prefix = "Next Day " if upto_dt.date() > base_dt.date() else ""
-            return f"{base_dt.strftime('%H:%M')}-{prefix}{upto_dt.strftime('%H:%M')}"
+            def format_upto_range(base_dt: datetime, upto_dt: datetime) -> str:
+                # Handles edge case displaying explicit cross-midnight endings neatly
+                prefix = "Next Day " if upto_dt.date() > base_dt.date() else ""
+                return f"{base_dt.strftime('%H:%M')}-{prefix}{upto_dt.strftime('%H:%M')}"
 
-        return JsonResponse({
-            "date": date_param,
-            "location": resolved_location,
-            "panchang": {
-                "sunrise": astro["sunrise"].strftime("%H:%M"),
-                "abhijeet_moohrat": abhijit_range,
-                "rahukal": rahu_range,
-                "sunset": astro["sunset"].strftime("%H:%M"),
-                "moonrise": astro["moonrise"].strftime("%H:%M"),
-                "moonset": astro["moonset"].strftime("%H:%M"),
-                "moon_sign": astro["moon_sign"],
-                "sun_sign": astro["sun_sign"],
-                "shaka_samvat": str(shaka_year),
-                "vikram_samvat": str(vikram_year),
-                "tithi": {"name": astro["tithi_name"], "upto": format_upto_range(target_dt, astro["tithi_upto"])},
-                "nakshatra": {"name": astro["nakshatra_name"], "upto": format_upto_range(target_dt, astro["nakshatra_upto"])},
-                "yoga": {"name": astro["yoga_name"], "upto": format_upto_range(target_dt, astro["yoga_upto"]), "next": astro["next_yoga"]},
-                "karana": {"name": astro["karana_name"], "upto": format_upto_range(target_dt, astro["karana_upto"])},
-                "var": {"name": resolved_vara, "ruler": WEEKDAY_LORDS[resolved_vara]},
-                "paksha": {"name": astro["paksha_name"], "label": astro["paksha_label"]},
-                "amanta_month": {"name": astro["amanta"], "note": "Lunar month"},
-                "purnima_month": {"name": astro["purnima"], "note": "Lunar month"},
-                "pravishte_gate": {"value": astro["pravishte_val"], "label": astro["pravishte_lbl"]}
-            }
-        }, json_dumps_params={'indent': 2})
+            return JsonResponse(sanitize_missing_values({
+                "date": date_param,
+                "location": resolved_location,
+                "panchang": {
+                    "sunrise": astro["sunrise"].strftime("%H:%M"),
+                    "abhijeet_moohrat": abhijit_range,
+                    "rahukal": rahu_range,
+                    "sunset": astro["sunset"].strftime("%H:%M"),
+                    "moonrise": astro["moonrise"].strftime("%H:%M"),
+                    "moonset": astro["moonset"].strftime("%H:%M"),
+                    "moon_sign": astro["moon_sign"],
+                    "sun_sign": astro["sun_sign"],
+                    "shaka_samvat": str(shaka_year),
+                    "vikram_samvat": str(vikram_year),
+                    "tithi": {"name": astro["tithi_name"], "upto": format_upto_range(target_dt, astro["tithi_upto"])},
+                    "nakshatra": {"name": astro["nakshatra_name"], "upto": format_upto_range(target_dt, astro["nakshatra_upto"])},
+                    "yoga": {"name": astro["yoga_name"], "upto": format_upto_range(target_dt, astro["yoga_upto"]), "next": astro["next_yoga"]},
+                    "karana": {"name": astro["karana_name"], "upto": format_upto_range(target_dt, astro["karana_upto"])},
+                    "var": {"name": resolved_vara, "ruler": WEEKDAY_LORDS[resolved_vara]},
+                    "paksha": {"name": astro["paksha_name"], "label": astro["paksha_label"]},
+                    "amanta_month": {"name": astro["amanta"], "note": "Lunar month"},
+                    "purnima_month": {"name": astro["purnima"], "note": "Lunar month"},
+                    "pravishte_gate": {"value": astro["pravishte_val"], "label": astro["pravishte_lbl"]}
+                }
+            }), json_dumps_params={'indent': 2})
+        except Exception as e:
+            return JsonResponse({
+                "error": "Astronomical calculation failed",
+                "detail": str(e)
+            }, status=500)
 
 # =====================================================================
 # 2. STANDALONE TRANSITS ENDPOINT VIEW
@@ -429,11 +444,11 @@ class GlobalTransitsAPIView(View, GeoLocationMixin):
                 "affects": vibe_meta["affects"]
             })
 
-        return JsonResponse({
+        return JsonResponse(sanitize_missing_values({
             "date": date_param,
             "location": resolved_location,
             "transits": transits_list
-        }, json_dumps_params={'indent': 2})
+        }), json_dumps_params={'indent': 2})
 
 
 # =====================================================================
@@ -532,11 +547,11 @@ class GlobalCelestialAPIView(View, GeoLocationMixin):
         except Exception:
             pass
 
-        return JsonResponse({
+        return JsonResponse(sanitize_missing_values({
             "date": date_param,
             "location": resolved_location,
             "positions": positions_payload
-        }, json_dumps_params={'indent': 2})
+        }), json_dumps_params={'indent': 2})
 
 
 # =====================================================================
@@ -662,7 +677,7 @@ class GlobalNumerologyAPIView(View):
             
             numerology_payload[str(num)] = paragraph
 
-        return JsonResponse({
+        return JsonResponse(sanitize_missing_values({
             "date": date_param,
             "neumerology": numerology_payload
-        }, json_dumps_params={'indent': 2})
+        }), json_dumps_params={'indent': 2})
