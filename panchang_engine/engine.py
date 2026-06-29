@@ -51,10 +51,10 @@ class EphemerisComputationalEngine:
         try:
             utc_date = target_date - timedelta(hours=tz_offset)
             tjd = swe.julday(utc_date.year, utc_date.month, utc_date.day, 0.0)
-            geopos = [lon, lat, 0.0]
+            geopos = (lon, lat, 0.0)
             
-            res_rise = swe.rise_trans(tjd, swe.SUN, geopos, ephe_flag=swe.FLG_SWIEPH, rsmi=swe.BIT_DISC_CENTER | swe.BIT_CALC_RISE)
-            res_set = swe.rise_trans(tjd, swe.SUN, geopos, ephe_flag=swe.FLG_SWIEPH, rsmi=swe.BIT_DISC_CENTER | swe.BIT_CALC_SET)
+            res_rise = swe.rise_trans(tjd, swe.SUN, swe.BIT_DISC_CENTER | swe.CALC_RISE, geopos)
+            res_set = swe.rise_trans(tjd, swe.SUN, swe.BIT_DISC_CENTER | swe.CALC_SET, geopos)
             
             def jd_to_local(jd):
                 ymd_hms = swe.revjul(jd)
@@ -66,9 +66,29 @@ class EphemerisComputationalEngine:
 
             return jd_to_local(res_rise[1][0]), jd_to_local(res_set[1][0])
         except Exception:
-            base_sunrise = datetime(target_date.year, target_date.month, target_date.day, 5, 30)
-            base_sunset = datetime(target_date.year, target_date.month, target_date.day, 19, 15)
-            return base_sunrise, base_sunset
+            try:
+                fallback_lon, fallback_lat = 75.7885, 23.1765
+                fallback_geopos = (fallback_lon, fallback_lat, 0.0)
+                res_rise = swe.rise_trans(tjd, swe.SUN, swe.BIT_DISC_CENTER | swe.CALC_RISE, fallback_geopos)
+                res_set = swe.rise_trans(tjd, swe.SUN, swe.BIT_DISC_CENTER | swe.CALC_SET, fallback_geopos)
+                
+                ymd_hms_rise = swe.revjul(res_rise[1][0])
+                dec_hour_rise = ymd_hms_rise[3]
+                hours_rise = int(dec_hour_rise)
+                minutes_rise = int((dec_hour_rise - hours_rise) * 60)
+                utc_dt_rise = datetime(ymd_hms_rise[0], ymd_hms_rise[1], ymd_hms_rise[2], hours_rise, minutes_rise)
+                
+                ymd_hms_set = swe.revjul(res_set[1][0])
+                dec_hour_set = ymd_hms_set[3]
+                hours_set = int(dec_hour_set)
+                minutes_set = int((dec_hour_set - hours_set) * 60)
+                utc_dt_set = datetime(ymd_hms_set[0], ymd_hms_set[1], ymd_hms_set[2], hours_set, minutes_set)
+                
+                return utc_dt_rise + timedelta(hours=tz_offset), utc_dt_set + timedelta(hours=tz_offset)
+            except Exception:
+                base_sunrise = datetime(target_date.year, target_date.month, target_date.day, 5, 30)
+                base_sunset = datetime(target_date.year, target_date.month, target_date.day, 19, 15)
+                return base_sunrise, base_sunset
 
     def _extract_raw_longitude(self, body_data) -> float:
         """Safely scans across all potential payload schemas to pull true decimal longitude."""

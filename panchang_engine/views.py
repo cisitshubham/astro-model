@@ -203,28 +203,50 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
         # Note: pyswisseph takes longitude before latitude, and tracks atmospheric refraction by default.
         horizon_flags = swe.BIT_DISC_CENTER
         
+        geopos = (lon, lat, 0.0)
+
         # Sun Horizon calculations
         try:
-            sunrise_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
-            sunset_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
+            sunrise_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags | swe.CALC_RISE, geopos)[1][0]
+            sunset_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags | swe.CALC_SET, geopos)[1][0]
         except (TypeError, IndexError, swe.Error):
-            sunrise_jd = jd_local_midnight + (5.38 / 24.0)
-            sunset_jd = jd_local_midnight + (19.51 / 24.0)
+            try:
+                # Fall back to calculating Ujjain baseline on the same date
+                fallback_geopos = (self.DEFAULT_LON, self.DEFAULT_LAT, 0.0)
+                sunrise_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags | swe.CALC_RISE, fallback_geopos)[1][0]
+                sunset_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags | swe.CALC_SET, fallback_geopos)[1][0]
+            except Exception:
+                sunrise_jd = jd_local_midnight + (6.0 / 24.0)
+                sunset_jd = jd_local_midnight + (18.0 / 24.0)
 
         # Moon Horizon calculations with 0.5-day tracking offset logic to widen operational capture boundaries
         try:
-            moonrise_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
+            moonrise_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags | swe.CALC_RISE, geopos)[1][0]
             if moonrise_jd < jd_local_midnight:
-                moonrise_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
+                moonrise_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags | swe.CALC_RISE, geopos)[1][0]
         except (TypeError, IndexError, swe.Error):
-            moonrise_jd = jd_local_midnight + (6.31 / 24.0)
+            try:
+                # Fall back to Ujjain baseline calculations
+                fallback_geopos = (self.DEFAULT_LON, self.DEFAULT_LAT, 0.0)
+                moonrise_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags | swe.CALC_RISE, fallback_geopos)[1][0]
+                if moonrise_jd < jd_local_midnight:
+                    moonrise_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags | swe.CALC_RISE, fallback_geopos)[1][0]
+            except Exception:
+                moonrise_jd = jd_local_midnight + (6.5 / 24.0)
 
         try:
-            moonset_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
+            moonset_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags | swe.CALC_SET, geopos)[1][0]
             if moonset_jd < jd_local_midnight:
-                moonset_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
+                moonset_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags | swe.CALC_SET, geopos)[1][0]
         except (TypeError, IndexError, swe.Error):
-            moonset_jd = jd_local_midnight + (21.1 / 24.0)
+            try:
+                # Fall back to Ujjain baseline calculations
+                fallback_geopos = (self.DEFAULT_LON, self.DEFAULT_LAT, 0.0)
+                moonset_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags | swe.CALC_SET, fallback_geopos)[1][0]
+                if moonset_jd < jd_local_midnight:
+                    moonset_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags | swe.CALC_SET, fallback_geopos)[1][0]
+            except Exception:
+                moonset_jd = jd_local_midnight + (18.5 / 24.0)
 
         return {
             "sunrise": jd_to_datetime(sunrise_jd),
@@ -363,8 +385,8 @@ class GlobalTransitsAPIView(View, GeoLocationMixin):
 
             for name, swe_id in swe_planets.items():
                 try:
-                    curr_data, _ = swe.calc_ut(jd_curr, swe_id, calc_flag)
-                    next_data, _ = swe.calc_ut(jd_next, swe_id, calc_flag)
+                    curr_data = swe.calc_ut(jd_curr, swe_id, calc_flag)[0]
+                    next_data = swe.calc_ut(jd_next, swe_id, calc_flag)[0]
                     
                     sign_curr = int(curr_data[0] // 30) % 12
                     sign_next = int(next_data[0] // 30) % 12
@@ -459,7 +481,7 @@ class GlobalCelestialAPIView(View, GeoLocationMixin):
 
         for name, swe_id in planets_definition.items():
             try:
-                res, _ = swe.calc_ut(jd, swe_id, calc_flag)
+                res = swe.calc_ut(jd, swe_id, calc_flag)[0]
                 total_lon = res[0]
                 speed = res[3]
 
@@ -482,7 +504,7 @@ class GlobalCelestialAPIView(View, GeoLocationMixin):
                 continue
 
         try:
-            rahu_res, _ = swe.calc_ut(jd, swe.TRUE_NODE, calc_flag)
+            rahu_res = swe.calc_ut(jd, swe.TRUE_NODE, calc_flag)[0]
             rahu_lon = rahu_res[0]
             ketu_lon = (rahu_lon + 180) % 360
 
