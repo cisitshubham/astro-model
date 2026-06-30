@@ -14,6 +14,7 @@ swe.calc_ut = patched_calc_ut
 from datetime import datetime, timedelta
 from django.http import JsonResponse
 from django.views import View
+from django.core.cache import cache
 from geopy.geocoders import Nominatim
 # Import dashaflow modules for dynamic calculation engine
 import dashaflow as df
@@ -57,16 +58,25 @@ class GeoLocationMixin:
             return None, None, None, None, None, None, None
 
         if location_param:
-            try:
-                geo_data = self.geocoding_agent.geocode(location_param, timeout=5)
-                if geo_data:
-                    lat, lon = geo_data.latitude, geo_data.longitude #type: ignore
-                    resolved_location = location_param
-                    tz_name = self.tz_finder.timezone_at(lng=lon, lat=lat) or self.DEFAULT_TZ
-                else:
+            cache_key = f"geo_{location_param.strip().lower()}"
+            cached_data = cache.get(cache_key)
+            if cached_data:
+                lat, lon, tz_name, resolved_location = cached_data
+            else:
+                try:
+                    geo_data = self.geocoding_agent.geocode(location_param, timeout=5)
+                    if geo_data:
+                        lat, lon = geo_data.latitude, geo_data.longitude #type: ignore
+                        resolved_location = location_param
+                        tz_name = self.tz_finder.timezone_at(lng=lon, lat=lat) or self.DEFAULT_TZ
+                        # Cache the resolved geocoding result persistently
+                        cache.set(cache_key, (lat, lon, tz_name, resolved_location), 86400 * 30)
+                    else:
+                        print(f"WARNING: Could not resolve location '{location_param}'. Falling back to Ujjain.")
+                        lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
+                except Exception as e:
+                    print(f"WARNING: Geocoding error for '{location_param}' ({str(e)}). Falling back to Ujjain.")
                     lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
-            except Exception:
-                lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
         else:
             lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
 
