@@ -25,12 +25,14 @@ from panchang_engine.engine import EphemerisComputationalEngine
 
 def sanitize_missing_values(data):
     if isinstance(data, dict):
-        return {k: sanitize_missing_values(v) for k, v in data.items()}
+        return {k: (v if k == "overLap" and v == "" else sanitize_missing_values(v)) for k, v in data.items()}
     elif isinstance(data, list):
         return [sanitize_missing_values(x) for x in data]
-    elif data is None or data == "" or data == "N/A" or data == "unknown" or data == "Unknown":
+    elif data is None or data == "" or data == "unknown" or data == "Unknown":
         return "-"
     return data
+
+
 
 # =====================================================================
 # GLOBAL GEOLOCATION MIXIN (Shared Framework across Endpoint Classes)
@@ -326,9 +328,59 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
                 end = start + timedelta(seconds=duration_sec)
                 return f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
 
-            abhijit_range = make_range_string(astro["sunrise"], (day_length_sec / 2) - 1440, 2880)
+            # Abhijit Muhurat is not calculated on Wednesdays (Budhavara)
+            if target_dt.weekday() == 2:
+                abhijit_range = "N/A"
+            else:
+                abhijit_range = make_range_string(astro["sunrise"], (day_length_sec / 2) - 1440, 2880)
             rahu_parts_mapping = {0: 1, 1: 6, 2: 4, 3: 5, 4: 3, 5: 2, 6: 7}
             rahu_range = make_range_string(astro["sunrise"], part_duration * rahu_parts_mapping.get(target_dt.weekday(), 1), part_duration)
+
+            # Calculate overlap between Abhijit Muhurat and Rahu Kaal
+            overlap_str = ""
+            if target_dt.weekday() != 2:
+                abhijit_start = astro["sunrise"] + timedelta(seconds=(day_length_sec / 2) - 1440)
+                abhijit_end = abhijit_start + timedelta(seconds=2880)
+                
+                rahu_start = astro["sunrise"] + timedelta(seconds=part_duration * rahu_parts_mapping.get(target_dt.weekday(), 1))
+                rahu_end = rahu_start + timedelta(seconds=part_duration)
+                
+                overlap_start = max(abhijit_start, rahu_start)
+                overlap_end = min(abhijit_end, rahu_end)
+                
+                if overlap_start < overlap_end:
+                    overlap_duration_seconds = (overlap_end - overlap_start).total_seconds()
+                    overlap_minutes = int(round(overlap_duration_seconds / 60))
+                    
+                    if overlap_minutes > 0:
+                        if rahu_start <= abhijit_start:
+                            overlap_position = "first"
+                            pure_half_name = "second half"
+                            pure_start = overlap_end + timedelta(minutes=1)
+                            pure_end = abhijit_end
+                        else:
+                            overlap_position = "final"
+                            pure_half_name = "first half"
+                            pure_start = abhijit_start
+                            pure_end = overlap_start - timedelta(minutes=1)
+                        
+                        overlap_start_fmt = overlap_start.strftime("%I:%M %p")
+                        overlap_end_fmt = overlap_end.strftime("%I:%M %p")
+                        pure_start_fmt = pure_start.strftime("%I:%M %p")
+                        pure_end_fmt = pure_end.strftime("%I:%M %p")
+                        
+                        if overlap_start_fmt.startswith("0"): overlap_start_fmt = overlap_start_fmt[1:]
+                        if overlap_end_fmt.startswith("0"): overlap_end_fmt = overlap_end_fmt[1:]
+                        if pure_start_fmt.startswith("0"): pure_start_fmt = pure_start_fmt[1:]
+                        if pure_end_fmt.startswith("0"): pure_end_fmt = pure_end_fmt[1:]
+                        
+                        overlap_str = (
+                            f"⚠️ SYSTEM OVERLAP DETECTED ({overlap_start_fmt} - {overlap_end_fmt}):\n"
+                            f"\"The {overlap_position} {overlap_minutes} minutes of Abhijit intersect with Rahu Kaal. "
+                            f"While Abhijit remains structurally active, it is highly recommended to initiate your "
+                            f"critical tasks during the pure, un-afflicted {pure_half_name} ({pure_start_fmt} to {pure_end_fmt}) for maximum success.\""
+                        )
+
 
             # Dynamic Era Calendars calculation
             shaka_year = target_dt.year - 78 if target_dt.month > 3 else target_dt.year - 79
@@ -350,6 +402,7 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
                     "sunrise": astro["sunrise"].strftime("%H:%M"),
                     "abhijeet_moohrat": abhijit_range,
                     "rahukal": rahu_range,
+                    "overLap": overlap_str,
                     "sunset": astro["sunset"].strftime("%H:%M"),
                     "moonrise": astro["moonrise"].strftime("%H:%M"),
                     "moonset": astro["moonset"].strftime("%H:%M"),

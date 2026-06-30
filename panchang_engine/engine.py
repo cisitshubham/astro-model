@@ -177,6 +177,53 @@ class EphemerisComputationalEngine:
         midday = sunrise + (daytime_duration / 2)
         abhijit_start = midday - timedelta(minutes=24)
         abhijit_end = midday + timedelta(minutes=24)
+        
+        # Abhijit Muhurat is not calculated on Wednesdays (Budhavara)
+        if weekday_idx == 2:
+            abhijit_muhurat_val = "N/A"
+        else:
+            abhijit_muhurat_val = f"{abhijit_start.strftime('%I:%M %p')} to {abhijit_end.strftime('%I:%M %p')}"
+
+        # Calculate overlap between Abhijit Muhurat and Rahu Kaal
+        overlap_str = ""
+        if weekday_idx != 2:
+            overlap_start = max(abhijit_start, rahu_start)
+            overlap_end = min(abhijit_end, rahu_end)
+            
+            if overlap_start < overlap_end:
+                overlap_duration_seconds = (overlap_end - overlap_start).total_seconds()
+                overlap_minutes = int(round(overlap_duration_seconds / 60))
+                
+                if overlap_minutes > 0:
+                    if rahu_start <= abhijit_start:
+                        overlap_position = "first"
+                        pure_half_name = "second half"
+                        pure_start = overlap_end + timedelta(minutes=1)
+                        pure_end = abhijit_end
+                    else:
+                        overlap_position = "final"
+                        pure_half_name = "first half"
+                        pure_start = abhijit_start
+                        pure_end = overlap_start - timedelta(minutes=1)
+                    
+                    overlap_start_fmt = overlap_start.strftime("%I:%M %p")
+                    overlap_end_fmt = overlap_end.strftime("%I:%M %p")
+                    pure_start_fmt = pure_start.strftime("%I:%M %p")
+                    pure_end_fmt = pure_end.strftime("%I:%M %p")
+                    
+                    if overlap_start_fmt.startswith("0"): overlap_start_fmt = overlap_start_fmt[1:]
+                    if overlap_end_fmt.startswith("0"): overlap_end_fmt = overlap_end_fmt[1:]
+                    if pure_start_fmt.startswith("0"): pure_start_fmt = pure_start_fmt[1:]
+                    if pure_end_fmt.startswith("0"): pure_end_fmt = pure_end_fmt[1:]
+                    
+                    overlap_str = (
+                        f"⚠️ SYSTEM OVERLAP DETECTED ({overlap_start_fmt} - {overlap_end_fmt}):\n"
+                        f"\"The {overlap_position} {overlap_minutes} minutes of Abhijit intersect with Rahu Kaal. "
+                        f"While Abhijit remains structurally active, it is highly recommended to initiate your "
+                        f"critical tasks during the pure, un-afflicted {pure_half_name} ({pure_start_fmt} to {pure_end_fmt}) for maximum success.\""
+                    )
+
+
 
         target_bodies = ["Sun", "Moon", "Mercury", "Venus", "Mars", "Jupiter", "Saturn", "Rahu", "Ketu", "Neptune", "Uranus", "Pluto"]
         celestial_planets_matrix = {}
@@ -274,12 +321,13 @@ class EphemerisComputationalEngine:
                 "nakshatra": parse_panchang_element(panchang, "Nakshatra"),
                 "paksha": parse_panchang_element(panchang, "Paksha"),
                 "yoga": parse_panchang_element(panchang, "Yoga"),
-                "karana": parse_panchang_element(panchang, "Karana")
+                "karana": parse_panchang_element(panchang, "Karana"),
+                "overLap": overlap_str
             },
             "timings": {
                 "sunrise": sunrise.strftime("%I:%M %p"),
                 "sunset": sunset.strftime("%I:%M %p"),
-                "abhijit_muhurat": f"{abhijit_start.strftime('%I:%M %p')} to {abhijit_end.strftime('%I:%M %p')}",
+                "abhijit_muhurat": abhijit_muhurat_val,
                 "rahu_kaal": f"{rahu_start.strftime('%I:%M %p')} to {rahu_end.strftime('%I:%M %p')}"
             },
             "planets": celestial_planets_matrix,
