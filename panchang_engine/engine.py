@@ -3,6 +3,15 @@ import swisseph as swe #type: ignore
 import pytz
 import random
 
+# Patch swisseph.calc_ut to return a 2-tuple for compatibility with dashaflow
+_orig_calc_ut = swe.calc_ut
+def patched_calc_ut(*args, **kwargs):
+    res = _orig_calc_ut(*args, **kwargs)
+    if isinstance(res, tuple) and len(res) == 3:
+        return (res[0], res[1])
+    return res
+swe.calc_ut = patched_calc_ut
+
 # Attempt imports gracefully; provide mock fallback for environments without dashaflow installed
 try:
     from dashaflow import cast_chart #type: ignore
@@ -278,6 +287,110 @@ class EphemerisComputationalEngine:
         }
 
         return panchang_payload
+
+    def get_daily_horoscopes(self, target_date: datetime, lat: float, lon: float, timezone_str: str) -> dict:
+        """Generates dynamic daily horoscopes for all 12 signs based on current planetary transits."""
+        panchang_data = self.get_panchang_data(target_date, lat, lon, timezone_str)
+        planets = panchang_data.get("planets", {})
+        
+        current_sun_sign = panchang_data.get("panchang", {}).get("sun_sign", "Unknown")
+        current_moon_sign = panchang_data.get("panchang", {}).get("moon_sign", "Unknown")
+        current_nakshatra = panchang_data.get("panchang", {}).get("nakshatra", "Unknown")
+        
+        ruler_map = {
+            "Aries": "Mars",
+            "Taurus": "Venus",
+            "Gemini": "Mercury",
+            "Cancer": "Moon",
+            "Leo": "Sun",
+            "Virgo": "Mercury",
+            "Libra": "Venus",
+            "Scorpio": "Mars",
+            "Sagittarius": "Jupiter",
+            "Capricorn": "Saturn",
+            "Aquarius": "Saturn",
+            "Pisces": "Jupiter"
+        }
+        
+        house_themes = {
+            1: ("first house of self and new initiatives", "focus on self-expression and identity", "embrace personal breakthroughs"),
+            2: ("second house of finances and value systems", "focus on resource management and financial clarity", "stabilize your material assets"),
+            3: ("third house of communication and mental agility", "focus on sharing ideas and networking", "connect with those in your immediate circle"),
+            4: ("fourth house of home and emotional stability", "focus on domestic harmony and inner peace", "nurture your personal foundations"),
+            5: ("fifth house of creativity and romantic expression", "focus on artistic pursuits and joyful ventures", "let your inner child play"),
+            6: ("sixth house of daily wellness and organized routines", "focus on health adjustments and solving obstacles", "bring order to your schedule"),
+            7: ("seventh house of partnerships and social dynamics", "focus on collaborative bonds and relationship balance", "cooperate closely with trusted peers"),
+            8: ("eighth house of transformation and deep investigation", "focus on parsing hidden truths and managing joint assets", "release old baggage and embrace change"),
+            9: ("ninth house of higher wisdom and broad perspectives", "focus on philosophical growth and expanding horizons", "seek out new learning experiences"),
+            10: ("tenth house of professional status and life direction", "focus on career milestones and public reputation", "step into a leadership role"),
+            11: ("eleventh house of community networks and future goals", "focus on social endeavors and collaborative aspirations", "manifest your long-term hopes"),
+            12: ("twelfth house of solitude and spiritual reflection", "focus on inner meditation and restful completion", "spend quiet time recharging your energy")
+        }
+        
+        date_seed = target_date.day * 100000 + target_date.month * 1000 + target_date.year
+        horoscopes = {}
+        
+        for i, sign in enumerate(self.ZODIAC_SIGNS):
+            random.seed(date_seed + i)
+            
+            ruler = ruler_map.get(sign, "Sun")
+            ruler_data = planets.get(ruler.lower(), {})
+            ruler_sign = ruler_data.get("sign_resolved", "Unknown")
+            is_retrograde = ruler_data.get("meta_data", {}).get("motion_status") == "RETROGRADE"
+            
+            if ruler_sign in self.ZODIAC_SIGNS:
+                ruler_sign_idx = self.ZODIAC_SIGNS.index(ruler_sign)
+                ruler_house = (ruler_sign_idx - i) % 12 + 1
+            else:
+                ruler_house = ((i + date_seed) % 12) + 1
+                
+            theme_info = house_themes.get(ruler_house, house_themes[1])
+            
+            if ruler_sign in self.ZODIAC_SIGNS:
+                s1_options = [
+                    f"{sign} is ruled by {ruler}, which is currently transiting through {ruler_sign}. This strongly activates your {theme_info[0]}.",
+                    f"With your ruler {ruler} moving through {ruler_sign}, your core focus shifts to your {theme_info[0]}.",
+                    f"The current placement of {ruler} in {ruler_sign} illuminates your {theme_info[0]}, highlighting new dynamics."
+                ]
+            else:
+                s1_options = [
+                    f"This day brings a powerful shift for {sign}, focusing attention on your {theme_info[0]}.",
+                    f"Cosmic energies today spotlight the theme of {theme_info[1]} for all {sign} individuals.",
+                    f"A strong energetic wave activates your {theme_info[0]} today."
+                ]
+            s1 = random.choice(s1_options)
+            
+            s2_options = [
+                f"As the Moon travels through {current_moon_sign} (specifically in the nakshatra of {current_nakshatra}), you are encouraged to {theme_info[1]}.",
+                f"With the lunar current passing through {current_moon_sign}, it is a prime moment to {theme_info[2]} and seek balance.",
+                f"The alignment of the Sun in {current_sun_sign} alongside the {current_moon_sign} Moon suggests you should {theme_info[1]}."
+            ]
+            s2 = random.choice(s2_options)
+            
+            if is_retrograde:
+                s3_options = [
+                    f"Since {ruler} is currently retrograde, take this time to reflect and review your current path rather than rushing forward.",
+                    f"With your ruling planet retrograde, proceed with patience and double-check your plans.",
+                    f"Ruler retrograde advises taking a step back to re-evaluate your long-term goals."
+                ]
+            else:
+                s3_options = [
+                    f"With {ruler} moving direct, direct your energy toward taking bold action and trust your instincts.",
+                    f"Use this direct momentum to finalize pending matters and move ahead with confidence.",
+                    f"This direct planetary flow supports taking initiative and making positive changes."
+                ]
+            s3 = random.choice(s3_options)
+            
+            prediction = f"{s1} {s2} {s3}"
+            
+            horoscopes[sign] = {
+                "ui_title": f"{sign} Daily Horoscope",
+                "prediction": prediction
+            }
+            
+        return horoscopes
+
+
 
 
 class NumerologyComputationalEngine:

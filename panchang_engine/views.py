@@ -2,6 +2,15 @@ import pytz
 import math
 import random
 import swisseph as swe
+# Patch swisseph.calc_ut to return a 2-tuple for compatibility with dashaflow
+_orig_calc_ut = swe.calc_ut
+def patched_calc_ut(*args, **kwargs):
+    res = _orig_calc_ut(*args, **kwargs)
+    if isinstance(res, tuple) and len(res) == 3:
+        return (res[0], res[1])
+    return res
+swe.calc_ut = patched_calc_ut
+
 from datetime import datetime, timedelta
 from django.http import JsonResponse
 from django.views import View
@@ -704,3 +713,34 @@ class GlobalNumerologyAPIView(View):
             "date": date_param,
             "neumerology": numerology_payload
         }), json_dumps_params={'indent': 2})
+
+
+# =====================================================================
+# 5. STANDALONE HOROSCOPE ENDPOINT VIEW
+# =====================================================================
+class GlobalHoroscopeAPIView(View, GeoLocationMixin):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        GeoLocationMixin.__init__(self)
+
+    def get(self, request, *args, **kwargs):
+        geo_data = self.resolve_location_and_tz(request)
+        if not geo_data[0]:
+            return JsonResponse({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+            
+        date_param, target_dt, resolved_location, tz_name, numeric_tz, lat, lon = geo_data
+
+        try:
+            engine = EphemerisComputationalEngine()
+            horoscopes = engine.get_daily_horoscopes(target_dt, lat, lon, tz_name)
+            
+            return JsonResponse(sanitize_missing_values({
+                "date": date_param,
+                "location": resolved_location,
+                "horoscope": horoscopes
+            }), json_dumps_params={'indent': 2})
+        except Exception as e:
+            return JsonResponse({
+                "error": "Horoscope calculation failed",
+                "detail": str(e)
+            }, status=500)
