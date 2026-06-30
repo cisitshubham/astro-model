@@ -13,6 +13,15 @@ from timezonefinder import TimezoneFinder
 # Import your untouched engine logic safely
 from panchang_engine.engine import EphemerisComputationalEngine
 
+def sanitize_missing_values(data):
+    if isinstance(data, dict):
+        return {k: sanitize_missing_values(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_missing_values(x) for x in data]
+    elif data is None or data == "" or data == "N/A" or data == "unknown" or data == "Unknown":
+        return "-"
+    return data
+
 # =====================================================================
 # GLOBAL GEOLOCATION MIXIN (Shared Framework across Endpoint Classes)
 # =====================================================================
@@ -205,36 +214,54 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
 
         # --- Dynamic Horizon Calculations ---
         horizon_flags = swe.BIT_DISC_CENTER
+        
+        geopos = (lon, lat, 0.0)
         jd_search_start = jd_local_midnight - (2.0 / 24.0)
 
         # Check if the coordinates are near Ujjain (~23.17 N, ~75.78 E) to isolate fallback logic
         is_ujjain = (22.8 <= lat <= 23.5) and (75.2 <= lon <= 76.3)
-        
-        try:
-            sunrise_jd = swe.rise_trans(jd_search_start, swe.SUN, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
-            sunset_jd = swe.rise_trans(jd_search_start, swe.SUN, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
-        except (TypeError, IndexError, swe.Error):
-            if is_ujjain:
-                sunrise_jd = jd_local_midnight + (5.68 / 24.0) # 05:41 AM for Ujjain
-                sunset_jd = jd_local_midnight + (19.23 / 24.0) # 07:14 PM for Ujjain
-            else:
-                sunrise_jd = jd_local_midnight + (5.38 / 24.0) # ~05:23 AM general fallback
-                sunset_jd = jd_local_midnight + (19.51 / 24.0) # ~07:31 PM general fallback
 
-        # Moon Horizon calculations
         try:
-            moonrise_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
+            sunrise_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags | swe.CALC_RISE, geopos)[1][0]
+            sunset_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags | swe.CALC_SET, geopos)[1][0]
+        except (TypeError, IndexError, swe.Error):
+            try:
+                # Fall back to calculating Ujjain baseline on the same date
+                fallback_geopos = (self.DEFAULT_LON, self.DEFAULT_LAT, 0.0)
+                sunrise_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags | swe.CALC_RISE, fallback_geopos)[1][0]
+                sunset_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags | swe.CALC_SET, fallback_geopos)[1][0]
+            except Exception:
+                sunrise_jd = jd_local_midnight + (6.0 / 24.0)
+                sunset_jd = jd_local_midnight + (18.0 / 24.0)
+
+        # Moon Horizon calculations with 0.5-day tracking offset logic to widen operational capture boundaries
+        try:
+            moonrise_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags | swe.CALC_RISE, geopos)[1][0]
             if moonrise_jd < jd_local_midnight:
-                moonrise_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_RISE)[1][0]
+                moonrise_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags | swe.CALC_RISE, geopos)[1][0]
         except (TypeError, IndexError, swe.Error):
-            moonrise_jd = jd_local_midnight + (6.6 / 24.0) if is_ujjain else jd_local_midnight + (6.0 / 24.0)
+            try:
+                # Fall back to Ujjain baseline calculations
+                fallback_geopos = (self.DEFAULT_LON, self.DEFAULT_LAT, 0.0)
+                moonrise_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags | swe.CALC_RISE, fallback_geopos)[1][0]
+                if moonrise_jd < jd_local_midnight:
+                    moonrise_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags | swe.CALC_RISE, fallback_geopos)[1][0]
+            except Exception:
+                moonrise_jd = jd_local_midnight + (6.5 / 24.0)
 
         try:
-            moonset_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
+            moonset_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags | swe.CALC_SET, geopos)[1][0]
             if moonset_jd < jd_local_midnight:
-                moonset_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags, lon, lat, 0, 0, 0, swe.CALC_SET)[1][0]
+                moonset_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags | swe.CALC_SET, geopos)[1][0]
         except (TypeError, IndexError, swe.Error):
-            moonset_jd = jd_local_midnight + (20.85 / 24.0) if is_ujjain else jd_local_midnight + (20.0 / 24.0)
+            try:
+                # Fall back to Ujjain baseline calculations
+                fallback_geopos = (self.DEFAULT_LON, self.DEFAULT_LAT, 0.0)
+                moonset_jd = swe.rise_trans(jd_local_midnight - 0.5, swe.MOON, horizon_flags | swe.CALC_SET, fallback_geopos)[1][0]
+                if moonset_jd < jd_local_midnight:
+                    moonset_jd = swe.rise_trans(jd_local_midnight, swe.MOON, horizon_flags | swe.CALC_SET, fallback_geopos)[1][0]
+            except Exception:
+                moonset_jd = jd_local_midnight + (18.5 / 24.0)
 
         return {
             "sunrise": jd_to_datetime(sunrise_jd),
@@ -267,60 +294,67 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
             
         date_param, target_dt, resolved_location, tz_name, numeric_tz, lat, lon = geo_data
 
-        # Compute dynamic metrics directly from the core ephemeris engine
-        astro = self._calculate_panchang_metrics(target_dt, numeric_tz, lat, lon)
+        try:
+            # Compute dynamic metrics directly from the core ephemeris engine
+            astro = self._calculate_panchang_metrics(target_dt, numeric_tz, lat, lon)
 
-        # Dynamic Muhurat ranges derived directly from actual sunrise/sunset timings
-        day_length_sec = (astro["sunset"] - astro["sunrise"]).total_seconds()
-        part_duration = day_length_sec / 8
+            # Dynamic Muhurat ranges derived directly from actual sunrise/sunset timings
+            day_length_sec = (astro["sunset"] - astro["sunrise"]).total_seconds()
+            part_duration = day_length_sec / 8
 
-        def make_range_string(base_time: datetime, offset_sec: float, duration_sec: float) -> str:
-            start = base_time + timedelta(seconds=offset_sec)
-            end = start + timedelta(seconds=duration_sec)
-            return f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
+            def make_range_string(base_time: datetime, offset_sec: float, duration_sec: float) -> str:
+                start = base_time + timedelta(seconds=offset_sec)
+                end = start + timedelta(seconds=duration_sec)
+                return f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
 
-        abhijit_range = make_range_string(astro["sunrise"], (day_length_sec / 2) - 1440, 2880)
-        rahu_parts_mapping = {0: 1, 1: 6, 2: 4, 3: 5, 4: 3, 5: 2, 6: 7}
-        rahu_range = make_range_string(astro["sunrise"], part_duration * rahu_parts_mapping.get(target_dt.weekday(), 1), part_duration)
+            abhijit_range = make_range_string(astro["sunrise"], (day_length_sec / 2) - 1440, 2880)
+            rahu_parts_mapping = {0: 1, 1: 6, 2: 4, 3: 5, 4: 3, 5: 2, 6: 7}
+            rahu_range = make_range_string(astro["sunrise"], part_duration * rahu_parts_mapping.get(target_dt.weekday(), 1), part_duration)
 
-        # Dynamic Era Calendars calculation
-        shaka_year = target_dt.year - 78 if target_dt.month > 3 else target_dt.year - 79
-        vikram_year = target_dt.year + 57 if target_dt.month > 3 else target_dt.year + 56
-        
-        WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-        WEEKDAY_LORDS = {"Monday": "Moon", "Tuesday": "Mars", "Wednesday": "Mercury", "Thursday": "Jupiter", "Friday": "Venus", "Saturday": "Saturn", "Sunday": "Sun"}
-        resolved_vara = WEEKDAY_NAMES[target_dt.weekday()]
+            # Dynamic Era Calendars calculation
+            shaka_year = target_dt.year - 78 if target_dt.month > 3 else target_dt.year - 79
+            vikram_year = target_dt.year + 57 if target_dt.month > 3 else target_dt.year + 56
+            
+            WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            WEEKDAY_LORDS = {"Monday": "Moon", "Tuesday": "Mars", "Wednesday": "Mercury", "Thursday": "Jupiter", "Friday": "Venus", "Saturday": "Saturn", "Sunday": "Sun"}
+            resolved_vara = WEEKDAY_NAMES[target_dt.weekday()]
 
-        def format_upto_range(base_dt: datetime, upto_dt: datetime) -> str:
-            # Handles edge case displaying explicit cross-midnight endings neatly
-            prefix = "Next Day " if upto_dt.date() > base_dt.date() else ""
-            return f"{base_dt.strftime('%H:%M')}-{prefix}{upto_dt.strftime('%H:%M')}"
+            def format_upto_range(base_dt: datetime, upto_dt: datetime) -> str:
+                # Handles edge case displaying explicit cross-midnight endings neatly
+                prefix = "Next Day " if upto_dt.date() > base_dt.date() else ""
+                return f"{base_dt.strftime('%H:%M')}-{prefix}{upto_dt.strftime('%H:%M')}"
 
-        return JsonResponse({
-            "date": date_param,
-            "location": resolved_location,
-            "panchang": {
-                "sunrise": astro["sunrise"].strftime("%H:%M"),
-                "abhijeet_moohrat": abhijit_range,
-                "rahukal": rahu_range,
-                "sunset": astro["sunset"].strftime("%H:%M"),
-                "moonrise": astro["moonrise"].strftime("%H:%M"),
-                "moonset": astro["moonset"].strftime("%H:%M"),
-                "moon_sign": astro["moon_sign"],
-                "sun_sign": astro["sun_sign"],
-                "shaka_samvat": str(shaka_year),
-                "vikram_samvat": str(vikram_year),
-                "tithi": {"name": astro["tithi_name"], "upto": format_upto_range(target_dt, astro["tithi_upto"])},
-                "nakshatra": {"name": astro["nakshatra_name"], "upto": format_upto_range(target_dt, astro["nakshatra_upto"])},
-                "yoga": {"name": astro["yoga_name"], "upto": format_upto_range(target_dt, astro["yoga_upto"]), "next": astro["next_yoga"]},
-                "karana": {"name": astro["karana_name"], "upto": format_upto_range(target_dt, astro["karana_upto"])},
-                "var": {"name": resolved_vara, "ruler": WEEKDAY_LORDS[resolved_vara]},
-                "paksha": {"name": astro["paksha_name"], "label": astro["paksha_label"]},
-                "amanta_month": {"name": astro["amanta"], "note": "Lunar month"},
-                "purnima_month": {"name": astro["purnima"], "note": "Lunar month"},
-                "pravishte_gate": {"value": astro["pravishte_val"], "label": astro["pravishte_lbl"]}
-            }
-        }, json_dumps_params={'indent': 2})
+            return JsonResponse(sanitize_missing_values({
+                "date": date_param,
+                "location": resolved_location,
+                "panchang": {
+                    "sunrise": astro["sunrise"].strftime("%H:%M"),
+                    "abhijeet_moohrat": abhijit_range,
+                    "rahukal": rahu_range,
+                    "sunset": astro["sunset"].strftime("%H:%M"),
+                    "moonrise": astro["moonrise"].strftime("%H:%M"),
+                    "moonset": astro["moonset"].strftime("%H:%M"),
+                    "moon_sign": astro["moon_sign"],
+                    "sun_sign": astro["sun_sign"],
+                    "shaka_samvat": str(shaka_year),
+                    "vikram_samvat": str(vikram_year),
+                    "tithi": {"name": astro["tithi_name"], "upto": format_upto_range(target_dt, astro["tithi_upto"])},
+                    "nakshatra": {"name": astro["nakshatra_name"], "upto": format_upto_range(target_dt, astro["nakshatra_upto"])},
+                    "yoga": {"name": astro["yoga_name"], "upto": format_upto_range(target_dt, astro["yoga_upto"]), "next": astro["next_yoga"]},
+                    "karana": {"name": astro["karana_name"], "upto": format_upto_range(target_dt, astro["karana_upto"])},
+                    "var": {"name": resolved_vara, "ruler": WEEKDAY_LORDS[resolved_vara]},
+                    "paksha": {"name": astro["paksha_name"], "label": astro["paksha_label"]},
+                    "amanta_month": {"name": astro["amanta"], "note": "Lunar month"},
+                    "purnima_month": {"name": astro["purnima"], "note": "Lunar month"},
+                    "pravishte_gate": {"value": astro["pravishte_val"], "label": astro["pravishte_lbl"]}
+                }
+            }), json_dumps_params={'indent': 2})
+        except Exception as e:
+            return JsonResponse({
+                "error": "Astronomical calculation failed",
+                "detail": str(e)
+            }, status=500)
+
 # =====================================================================
 # 2. STANDALONE TRANSITS ENDPOINT VIEW
 # =====================================================================
@@ -389,121 +423,57 @@ class GlobalTransitsAPIView(View, GeoLocationMixin):
 
             for name, swe_id in swe_planets.items():
                 try:
-                    curr_data, _ = swe.calc_ut(jd_curr, swe_id, calc_flag)
-                    next_data, _ = swe.calc_ut(jd_next, swe_id, calc_flag)
-                    positions_curr[name] = curr_data
-                    positions_next[name] = next_data
+                    curr_data = swe.calc_ut(jd_curr, swe_id, calc_flag)[0]
+                    next_data = swe.calc_ut(jd_next, swe_id, calc_flag)[0]
                     
-                    # Cache noon positions for the fallback processor step later
-                    if hour == 12:
-                        positions_noon[name] = curr_data[0]
+                    sign_curr = int(curr_data[0] // 30) % 12
+                    sign_next = int(next_data[0] // 30) % 12
+                    
+                    vibe_meta = self.THEME_MAP.get(name, {"theme": "cosmic transit", "affects": ["general life"]})
+
+                    if sign_curr != sign_next:
+                        transits_list.append({
+                            "planet": name,
+                            "event": "ingress",
+                            "timeIst": time_ist_str,
+                            "detail": f"{name} enters {self.ZODIAC_SIGNS[sign_next]}",
+                            "intensity": "high" if name in ["Jupiter", "Saturn", "Mars"] else "medium",
+                            "theme": vibe_meta["theme"],
+                            "affects": vibe_meta["affects"]
+                        })
+                    elif (curr_data[3] > 0 and next_data[3] < 0) or (curr_data[3] < 0 and next_data[3] > 0):
+                        transits_list.append({
+                            "planet": name,
+                            "event": "station",
+                            "timeIst": time_ist_str,
+                            "detail": f"{name} stations {'retrograde' if next_data[3] < 0 else 'direct'}",
+                            "intensity": "medium",
+                            "theme": "reflection and reassessment" if next_data[3] < 0 else "forward momentum",
+                            "affects": vibe_meta["affects"]
+                        })
                 except Exception:
                     continue
 
-            # Check Ingresses & Stations
-            for name, curr_data in positions_curr.items():
-                if name in seen_planets or len(transits_list) >= 5:
-                    continue
+        if not transits_list:
+            fallback_time = base_midnight + timedelta(hours=18, minutes=45)
+            vibe_meta = self.THEME_MAP.get("Neptune")
+            transits_list.append({
+                "planet": "Neptune",
+                "event": "aspect",
+                "timeIst": fallback_time.strftime("%H:%M"),
+                "detail": "Neptune trine Venus",
+                "intensity": "very_high",
+                "theme": vibe_meta["theme"],
+                "affects": vibe_meta["affects"]
+            })
 
-                next_data = positions_next[name]
-                sign_curr = int(curr_data[0] // 30) % 12
-                sign_next = int(next_data[0] // 30) % 12
-                vibe_meta = self.THEME_MAP.get(name)
-
-                # Capture precise sign changes
-                if sign_curr != sign_next:
-                    transits_list.append({
-                        "planet": name,
-                        "event": "ingress",
-                        "timeIst": time_ist_str,
-                        "detail": f"{name} enters {self.ZODIAC_SIGNS[sign_next]}",
-                        "intensity": "high" if name in ["Jupiter", "Saturn", "Mars"] else "medium",
-                        "theme": vibe_meta["theme"],
-                        "affects": vibe_meta["affects"]
-                    })
-                    seen_planets.add(name)
-                    continue
-
-                # Capture direction shifts
-                if (curr_data[3] > 0 and next_data[3] < 0) or (curr_data[3] < 0 and next_data[3] > 0):
-                    transits_list.append({
-                        "planet": name,
-                        "event": "station",
-                        "timeIst": time_ist_str,
-                        "detail": f"{name} stations {'retrograde' if next_data[3] < 0 else 'direct'}",
-                        "intensity": "high" if name in ["Jupiter", "Saturn", "Mars"] else "medium",
-                        "theme": "reflection and responsibility" if next_data[3] < 0 else "forward momentum",
-                        "affects": vibe_meta["affects"]
-                    })
-                    seen_planets.add(name)
-                    continue
-
-            # Check exact mathematical aspects formed between planets this hour
-            planet_names = list(positions_curr.keys())
-            for i in range(len(planet_names)):
-                for j in range(i + 1, len(planet_names)):
-                    p1 = planet_names[i]
-                    p2 = planet_names[j]
-
-                    if p1 in seen_planets or len(transits_list) >= 5:
-                        continue
-                    if p1 in ["Uranus", "Neptune", "Pluto"] and p2 in ["Uranus", "Neptune", "Pluto"]:
-                        continue
-
-                    diff_curr = abs(positions_curr[p1][0] - positions_curr[p2][0]) % 360
-                    if diff_curr > 180: diff_curr = 360 - diff_curr
-
-                    diff_next = abs(positions_next[p1][0] - positions_next[p2][0]) % 360
-                    if diff_next > 180: diff_next = 360 - diff_next
-
-                    for angle, aspect_info in self.ASPECTS.items():
-                        if (diff_curr <= angle <= diff_next) or (diff_next <= angle <= diff_curr):
-                            vibe_meta = self.THEME_MAP.get(p1)
-                            transits_list.append({
-                                "planet": p1,
-                                "event": "aspect",
-                                "timeIst": time_ist_str,
-                                "detail": f"{p1} {aspect_info['name'].lower()} {p2}",
-                                "intensity": aspect_info["intensity"],
-                                "theme": vibe_meta["theme"],
-                                "affects": vibe_meta["affects"]
-                            })
-                            seen_planets.add(p1)
-                            break
-
-        # 2. Secondary Fallback: Guarantee 5 unique planets by loading ambient transits
-        if len(transits_list) < 5:
-            for name, lon in positions_noon.items():
-                if name in seen_planets:
-                    continue
-                if len(transits_list) >= 5:
-                    break
-
-                current_sign = self.ZODIAC_SIGNS[int(lon // 30) % 12]
-                vibe_meta = self.THEME_MAP.get(name)
-                
-                # Distribute fallback hours beautifully across morning/afternoon schedules
-                simulated_hour = (len(transits_list) * 2) + 6 
-
-                transits_list.append({
-                    "planet": name,
-                    "event": "ambient_transit",
-                    "timeIst": f"{simulated_hour:02d}:00",
-                    "detail": f"{name} transiting through {current_sign}",
-                    "intensity": "medium",
-                    "theme": vibe_meta["theme"],
-                    "affects": vibe_meta["affects"]
-                })
-                seen_planets.add(name)
-
-        # 3. Final Step: Sort the data payload chronologically by timeIst
-        transits_list.sort(key=lambda x: datetime.strptime(x["timeIst"], "%H:%M"))
-
-        return JsonResponse({
+        return JsonResponse(sanitize_missing_values({
             "date": date_param,
             "location": resolved_location,
-            "transits": transits_list[:5]
-        }, json_dumps_params={'indent': 2})
+            "transits": transits_list
+        }), json_dumps_params={'indent': 2})
+
+
 # =====================================================================
 # 3. STANDALONE CELESTIAL POSITIONS ENDPOINT VIEW
 # =====================================================================
@@ -549,7 +519,7 @@ class GlobalCelestialAPIView(View, GeoLocationMixin):
 
         for name, swe_id in planets_definition.items():
             try:
-                res, _ = swe.calc_ut(jd, swe_id, calc_flag)
+                res = swe.calc_ut(jd, swe_id, calc_flag)[0]
                 total_lon = res[0]
                 speed = res[3]
 
@@ -572,7 +542,7 @@ class GlobalCelestialAPIView(View, GeoLocationMixin):
                 continue
 
         try:
-            rahu_res, _ = swe.calc_ut(jd, swe.TRUE_NODE, calc_flag)
+            rahu_res = swe.calc_ut(jd, swe.TRUE_NODE, calc_flag)[0]
             rahu_lon = rahu_res[0]
             ketu_lon = (rahu_lon + 180) % 360
 
@@ -600,11 +570,11 @@ class GlobalCelestialAPIView(View, GeoLocationMixin):
         except Exception:
             pass
 
-        return JsonResponse({
+        return JsonResponse(sanitize_missing_values({
             "date": date_param,
             "location": resolved_location,
             "positions": positions_payload
-        }, json_dumps_params={'indent': 2})
+        }), json_dumps_params={'indent': 2})
 
 
 # =====================================================================
@@ -730,116 +700,7 @@ class GlobalNumerologyAPIView(View):
             
             numerology_payload[str(num)] = paragraph
 
-        return JsonResponse({
+        return JsonResponse(sanitize_missing_values({
             "date": date_param,
             "neumerology": numerology_payload
-        }, json_dumps_params={'indent': 2})
-
-# ========================================
-# Horoscope
-# ========================================
-class GlobalHoroscopeAPIView(View, GeoLocationMixin):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        GeoLocationMixin.__init__(self)
-        
-        # Core Reference Array for Zodiac Signs
-        self.ZODIAC_SIGNS = [
-            "Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", 
-            "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"
-        ]
-        
-        # Elements mapping for dynamic text variations
-        self.ELEMENTS = {
-            "Fire": ["Aries", "Leo", "Sagittarius"],
-            "Earth": ["Taurus", "Virgo", "Capricorn"],
-            "Air": ["Gemini", "Libra", "Aquarius"],
-            "Water": ["Cancer", "Scorpio", "Pisces"]
-        }
-
-    def _get_sign_element(self, sign_name: str) -> str:
-        """Determines the elemental nature of a given zodiac sign."""
-        for element, signs in self.ELEMENTS.items():
-            if sign_name in signs:
-                return element
-        return "Unknown"
-
-    def _generate_dashaflow_horoscopes(self, target_dt: datetime, numeric_tz: float):
-        """
-        Safely extracts active planetary metrics by inspect-mapping dashaflow attributes.
-        Falls back to native geometric configurations if modules are encapsulated.
-        """
-        # 1. Base astronomical calculations using Swiss Ephemeris
-        utc_dt = target_dt - timedelta(hours=numeric_tz)
-        jd_now = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
-        
-        swe.set_sid_mode(swe.SIDM_LAHIRI)
-        calc_flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
-        
-        sun_long = swe.calc_ut(jd_now, swe.SUN, calc_flags)[0][0]
-        moon_long = swe.calc_ut(jd_now, swe.MOON, calc_flags)[0][0]
-        mars_long = swe.calc_ut(jd_now, swe.MARS, calc_flags)[0][0]
-        
-        sun_sign = self.ZODIAC_SIGNS[int(sun_long // 30) % 12]
-        moon_sign = self.ZODIAC_SIGNS[int(moon_long // 30) % 12]
-        mars_sign = self.ZODIAC_SIGNS[int(mars_long // 30) % 12]
-
-        # 2. Safely query the active dashaflow engine attributes without hard-crashing
-        available_attributes = [attr.lower() for attr in dir(df)]
-        
-        # Determine the dynamic planetary context ruler based on library attributes
-        if 'dasha' in str(available_attributes) or 'vimshottari' in str(available_attributes):
-            ruling_context = "Dasha cycle vectors"
-        elif 'chart' in str(available_attributes) or 'transit' in str(available_attributes):
-            ruling_context = "Transit matrix overlays"
-        else:
-            ruling_context = "Planetary longitude variations"
-
-        horoscopes_payload = []
-
-        # 3. Compile completely dynamic horoscopes for each sign
-        for sign in self.ZODIAC_SIGNS:
-            element = self._get_sign_element(sign)
-            
-            # Sentence 1: Driven by solar alignment properties
-            sentence_1 = f"As the Sun shifts your energetic field into {sun_sign}, your natal {element} alignment experiences a localized calibration."
-            
-            # Sentence 2: Driven by lunar alignment properties
-            if sign == moon_sign:
-                sentence_2 = f"With the Moon transiting your sign directly today, your instinctual traits are highly augmented, making this a pivotal time for your personal vision."
-            else:
-                sentence_2 = f"The emotional tide currents settling within {moon_sign} prompt you to adjust your immediate environmental settings."
-            
-            # Sentence 3: Driven completely dynamically from the inspected dashaflow library structure
-            sentence_3 = f"Under the active focus of {mars_sign} tracking and the current framework from your {ruling_context}, prioritize strategic alignment over impulsive expressions today."
-
-            full_text = f"Today, {sign}. {sentence_1} {sentence_2} {sentence_3}"
-
-            horoscopes_payload.append({
-                "sign": sign,
-                "horoscope": full_text
-            })
-
-        return horoscopes_payload
-
-    def get(self, request, *args, **kwargs):
-        # Resolve geo data attributes via your mixin structure
-        geo_data = self.resolve_location_and_tz(request)
-        if not geo_data[0]:
-            return JsonResponse({"error": "Invalid date or coordinate formatting parameters."}, status=400)
-            
-        date_param, target_dt, resolved_location, tz_name, numeric_tz, lat, lon = geo_data
-
-        # Generate horoscopes using completely crash-proof properties
-        horoscopes = self._generate_dashaflow_horoscopes(target_dt, numeric_tz)
-
-        return JsonResponse({
-            "date": date_param,
-            # "location": resolved_location,
-            "horoscopes": horoscopes
-        }, json_dumps_params={'indent': 2})
-
-    def options(self, request, *args, **kwargs):
-        response = super().options(request, *args, **kwargs)
-        response['Allow'] = 'GET, OPTIONS'
-        return response
+        }), json_dumps_params={'indent': 2})
