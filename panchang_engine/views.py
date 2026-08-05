@@ -330,7 +330,7 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
 
             # Abhijit Muhurat is not calculated on Wednesdays (Budhavara)
             if target_dt.weekday() == 2:
-                abhijit_range = "N/A"
+                abhijit_range = "-"
             else:
                 abhijit_range = make_range_string(astro["sunrise"], (day_length_sec / 2) - 1440, 2880)
             rahu_parts_mapping = {0: 1, 1: 6, 2: 4, 3: 5, 4: 3, 5: 2, 6: 7}

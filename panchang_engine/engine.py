@@ -180,7 +180,7 @@ class EphemerisComputationalEngine:
         
         # Abhijit Muhurat is not calculated on Wednesdays (Budhavara)
         if weekday_idx == 2:
-            abhijit_muhurat_val = "N/A"
+            abhijit_muhurat_val = "-"
         else:
             abhijit_muhurat_val = f"{abhijit_start.strftime('%I:%M %p')} to {abhijit_end.strftime('%I:%M %p')}"
 
