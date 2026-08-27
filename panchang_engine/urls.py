@@ -4,7 +4,8 @@ from .views import (
     GlobalTransitsAPIView, 
     GlobalCelestialAPIView,
     GlobalNumerologyAPIView,
-    GlobalHoroscopeAPIView
+    GlobalHoroscopeAPIView,
+    GlobalMoohratsAPIView
 )
 
 urlpatterns = [
@@ -22,4 +23,7 @@ urlpatterns = [
     
     # 5 Horoscope
     path('api/horoscope/', GlobalHoroscopeAPIView.as_view(), name='global_horoscope_api'),
+
+    # 6. Muhurtas (moohrats)
+    path('api/moohrats/', GlobalMoohratsAPIView.as_view(), name='global_moohrats_api'),
 ]

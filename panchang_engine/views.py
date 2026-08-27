@@ -806,4 +806,239 @@ class GlobalHoroscopeAPIView(View, GeoLocationMixin):
             return JsonResponse({
                 "error": "Horoscope calculation failed",
                 "detail": str(e)
-            }, status=500)
+            }, status=500)
+
+
+# =====================================================================
+# 6. STANDALONE MOOHRATS ENDPOINT VIEW
+# =====================================================================
+class GlobalMoohratsAPIView(View, GeoLocationMixin):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        GeoLocationMixin.__init__(self)
+        
+        self.NAKSHATRAS = [
+            "Ashwini", "Bharani", "Krittika", "Rohini", "Mrigashira", "Ardra", "Punarvasu", "Pushya", "Ashlesha",
+            "Maghā", "Purva Phalguni", "Uttara Phalguni", "Hasta", "Chitra", "Swati", "Vishakha", "Anuradha", "Jyeshtha",
+            "Mula", "Purva Ashadha", "Uttara Ashadha", "Shravana", "Dhanishta", "Shatabhisha", "Purva Bhadrapada", "Uttara Bhadrapada", "Revati"
+        ]
+        
+        self.CHOGHADIYA_TYPES = {
+            "Udveg": "inauspicious",
+            "Chara": "neutral",
+            "Labha": "auspicious",
+            "Amrita": "auspicious",
+            "Kala": "inauspicious",
+            "Shubha": "auspicious",
+            "Roga": "inauspicious"
+        }
+
+        self.WEEKDAY_CHOGHADIYA_ORDER = {
+            0: ["Amrita", "Kala", "Shubha", "Roga", "Udveg", "Chara", "Labha", "Amrita"], # Monday
+            1: ["Roga", "Udveg", "Chara", "Labha", "Amrita", "Kala", "Shubha", "Roga"],  # Tuesday
+            2: ["Labha", "Amrita", "Kala", "Shubha", "Roga", "Udveg", "Chara", "Labha"], # Wednesday
+            3: ["Shubha", "Roga", "Udveg", "Chara", "Labha", "Amrita", "Kala", "Shubha"], # Thursday
+            4: ["Chara", "Labha", "Amrita", "Kala", "Shubha", "Roga", "Udveg", "Chara"], # Friday
+            5: ["Kala", "Shubha", "Roga", "Udveg", "Chara", "Labha", "Amrita", "Kala"],  # Saturday
+            6: ["Udveg", "Chara", "Labha", "Amrita", "Kala", "Shubha", "Roga", "Udveg"]  # Sunday
+        }
+
+        self.MUHURAT_RULES = {
+            "Griha Pravesh Muhurat": {
+                "naks": [3, 4, 13, 16, 11, 20, 25, 26, 7, 6, 14, 23],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1, 5, 6]  # Tuesday, Saturday, Sunday
+            },
+            "Bhoomi Pujan Muhurat": {
+                "naks": [3, 4, 13, 16, 17, 23, 22, 11, 20, 25, 12, 7],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1, 6]
+            },
+            "Property Purchase Muhurat": {
+                "naks": [4, 8, 9, 10, 12, 13, 14, 16, 17, 18, 19, 26, 3, 11, 20, 25],
+                "tithis": [1, 2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1]
+            },
+            "Vivah Muhurat": {
+                "naks": [3, 4, 9, 11, 12, 14, 16, 18, 20, 25, 26],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1]
+            },
+            "Naamkaran Muhurat": {
+                "naks": [0, 3, 4, 6, 7, 11, 12, 13, 14, 16, 20, 21, 22, 23, 25, 26],
+                "tithis": [1, 2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1]
+            },
+            "Mundan Muhurat": {
+                "naks": [17, 4, 7, 13, 12, 26, 0, 6, 14, 23],
+                "tithis": [2, 3, 5, 7, 10, 11, 13],
+                "avoid_varas": [1, 5, 6]
+            },
+            "Annaprashan Muhurat": {
+                "naks": [0, 3, 4, 6, 7, 11, 12, 13, 14, 16, 20, 21, 22, 23, 25, 26],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1, 5, 6]
+            },
+            "Upanayanam Muhurat": {
+                "naks": [0, 3, 4, 6, 7, 12, 13, 14, 16, 21, 22, 23, 26],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13],
+                "avoid_varas": [1, 5, 6]
+            },
+            "Vahan Puja Muhurat": {
+                "naks": [0, 3, 6, 7, 12, 13, 14, 16, 21, 23, 26],
+                "tithis": [1, 2, 3, 5, 7, 8, 10, 11, 12, 13, 15],
+                "avoid_varas": [5]
+            },
+            "Vyapar / New Business Muhurat": {
+                "naks": [7, 3, 4, 13, 16, 26, 0, 12, 14, 21, 23],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1]
+            },
+            "Gold and Valuables Muhurat": {
+                "naks": [7, 3, 4, 12, 13, 16, 26, 14, 0],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1, 5]
+            }
+        }
+
+    def _get_sunrise_sunset(self, target_date: datetime, lat: float, lon: float, tz_offset: float):
+        utc_date = target_date - timedelta(hours=tz_offset)
+        tjd = swe.julday(utc_date.year, utc_date.month, utc_date.day, 0.0)
+        geopos = (lon, lat, 0.0)
+        
+        try:
+            res_rise = swe.rise_trans(tjd, swe.SUN, swe.BIT_DISC_CENTER | swe.CALC_RISE, geopos)
+            res_set = swe.rise_trans(tjd, swe.SUN, swe.BIT_DISC_CENTER | swe.CALC_SET, geopos)
+            
+            def jd_to_local(jd):
+                ymd_hms = swe.revjul(jd)
+                dec_hour = ymd_hms[3]
+                hours = int(dec_hour)
+                minutes = int((dec_hour - hours) * 60)
+                seconds = int(round(((dec_hour - hours) * 60 - minutes) * 60))
+                if seconds >= 60:
+                    seconds = 0
+                    minutes += 1
+                if minutes >= 60:
+                    minutes = 0
+                    hours += 1
+                utc_dt = datetime(ymd_hms[0], ymd_hms[1], ymd_hms[2], hours, minutes, seconds)
+                return utc_dt + timedelta(hours=tz_offset)
+
+            return jd_to_local(res_rise[1][0]), jd_to_local(res_set[1][0])
+        except Exception:
+            base_sunrise = datetime(target_date.year, target_date.month, target_date.day, 6, 0)
+            base_sunset = datetime(target_date.year, target_date.month, target_date.day, 18, 30)
+            return base_sunrise, base_sunset
+
+    def get(self, request, *args, **kwargs):
+        import calendar
+        
+        month_param = request.GET.get("month")
+        year_param = request.GET.get("year")
+        
+        if not month_param or not year_param:
+            return JsonResponse({"error": "month and year parameters are required"}, status=400)
+            
+        try:
+            year = int(year_param)
+            if year < 1900 or year > 2100:
+                raise ValueError("Year out of reasonable bounds")
+        except ValueError:
+            return JsonResponse({"error": "Invalid year parameter. Must be an integer between 1900 and 2100"}, status=400)
+            
+        try:
+            if month_param.isdigit():
+                month = int(month_param)
+            else:
+                month_name_lower = month_param.strip().lower()
+                month_map = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
+                month_abbr_map = {m.lower(): i for i, m in enumerate(calendar.month_abbr) if m}
+                
+                if month_name_lower in month_map:
+                    month = month_map[month_name_lower]
+                elif month_name_lower in month_abbr_map:
+                    month = month_abbr_map[month_name_lower]
+                else:
+                    raise ValueError("Invalid month name")
+                    
+            if month < 1 or month > 12:
+                raise ValueError("Month out of range")
+        except ValueError:
+            return JsonResponse({"error": "Invalid month parameter. Must be 1-12 or a valid month name"}, status=400)
+            
+        # Temporarily patch the GET 'date' param so GeoLocationMixin resolves correctly
+        original_get = request.GET.copy()
+        request.GET = request.GET.copy()
+        request.GET["date"] = f"{year}-{month:02d}-01"
+        
+        geo_data = self.resolve_location_and_tz(request)
+        request.GET = original_get # Restore original query params
+        
+        if not geo_data[0]:
+            lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
+            numeric_tz = 5.5
+        else:
+            _, _, resolved_location, tz_name, numeric_tz, lat, lon = geo_data
+            
+        moohrats_payload = {cat: {} for cat in self.MUHURAT_RULES.keys()}
+        num_days = calendar.monthrange(year, month)[1]
+        month_name = calendar.month_name[month]
+        
+        swe.set_sid_mode(swe.SIDM_LAHIRI)
+        calc_flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
+        
+        for d in range(1, num_days + 1):
+            target_dt = datetime(year, month, d, 12, 0, 0)
+            utc_dt = target_dt - timedelta(hours=numeric_tz)
+            jd_now = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
+            
+            try:
+                sun_long = swe.calc_ut(jd_now, swe.SUN, calc_flags)[0][0]
+                moon_long = swe.calc_ut(jd_now, swe.MOON, calc_flags)[0][0]
+            except Exception:
+                continue
+                
+            elongation = (moon_long - sun_long) % 360
+            tithi_idx = int(elongation // 12) + 1
+            if tithi_idx > 30: tithi_idx = 30
+            
+            nak_idx = int(moon_long // (360 / 27)) % 27
+            weekday_idx = target_dt.weekday()
+            
+            date_str = target_dt.strftime("%Y-%m-%d")
+            
+            sunrise, sunset = self._get_sunrise_sunset(target_dt, lat, lon, numeric_tz)
+            day_length_sec = (sunset - sunrise).total_seconds()
+            part_duration = day_length_sec / 8
+            
+            choghadiya_order = self.WEEKDAY_CHOGHADIYA_ORDER[weekday_idx]
+            auspicious_times_list = []
+            for i, ch_name in enumerate(choghadiya_order):
+                if self.CHOGHADIYA_TYPES[ch_name] == "auspicious":
+                    start_time = sunrise + timedelta(seconds=i * part_duration)
+                    end_time = start_time + timedelta(seconds=part_duration)
+                    auspicious_times_list.append(f"{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
+                    
+            auspicious_times_list = auspicious_times_list[:3]
+            
+            for category, rules in self.MUHURAT_RULES.items():
+                is_suitable = True
+                
+                if weekday_idx in rules["avoid_varas"]:
+                    is_suitable = False
+                    
+                if tithi_idx not in rules["tithis"]:
+                    is_suitable = False
+                    
+                if nak_idx not in rules["naks"]:
+                    is_suitable = False
+                    
+                if is_suitable:
+                    if month_name not in moohrats_payload[category]:
+                        moohrats_payload[category][month_name] = {}
+                    moohrats_payload[category][month_name][date_str] = auspicious_times_list
+                    
+        return JsonResponse(sanitize_missing_values({
+            "moohrats": moohrats_payload
+        }), json_dumps_params={'indent': 2})
