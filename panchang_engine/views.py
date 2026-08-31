@@ -967,11 +967,17 @@ class GlobalMoohratsAPIView(View, GeoLocationMixin):
         except ValueError:
             return JsonResponse({"error": "Invalid month parameter. Must be 1-12 or a valid month name"}, status=400)
             
-        # 3. Resolve optional title parameter
-        title_param = request.GET.get("title")
-        categories_to_check = self.MUHURAT_RULES
-        if title_param:
-            normalized_title = title_param.strip().lower()
+        # 3. Resolve optional title parameter(s)
+        title_param_list = request.GET.getlist("title")
+        titles = []
+        for tp in title_param_list:
+            if "," in tp:
+                titles.extend(item.strip().lower() for item in tp.split(",") if item.strip())
+            elif tp.strip():
+                titles.append(tp.strip().lower())
+
+        categories_to_check = {}
+        if titles:
             title_mapping = {
                 "grihapraveshmuhurat": "Griha Pravesh Muhurat",
                 "bhoomipujanmuhurat": "Bhoomi Pujan Muhurat",
@@ -985,11 +991,14 @@ class GlobalMoohratsAPIView(View, GeoLocationMixin):
                 "vyaparmuhurat": "Vyapar / New Business Muhurat",
                 "goldandvaluablesmuhurat": "Gold and Valuables Muhurat"
             }
-            if normalized_title in title_mapping:
-                target_cat = title_mapping[normalized_title]
-                categories_to_check = {target_cat: self.MUHURAT_RULES[target_cat]}
-            else:
-                return JsonResponse({"error": f"Invalid title parameter: {title_param}"}, status=400)
+            for t in titles:
+                if t in title_mapping:
+                    target_cat = title_mapping[t]
+                    categories_to_check[target_cat] = self.MUHURAT_RULES[target_cat]
+                else:
+                    return JsonResponse({"error": f"Invalid title parameter: {t}"}, status=400)
+        else:
+            categories_to_check = self.MUHURAT_RULES
 
         # Temporarily patch the GET 'date' param so GeoLocationMixin resolves correctly
         original_get = request.GET.copy()
