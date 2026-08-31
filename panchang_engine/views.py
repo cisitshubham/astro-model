@@ -967,6 +967,30 @@ class GlobalMoohratsAPIView(View, GeoLocationMixin):
         except ValueError:
             return JsonResponse({"error": "Invalid month parameter. Must be 1-12 or a valid month name"}, status=400)
             
+        # 3. Resolve optional title parameter
+        title_param = request.GET.get("title")
+        categories_to_check = self.MUHURAT_RULES
+        if title_param:
+            normalized_title = title_param.strip().lower()
+            title_mapping = {
+                "grihapraveshmuhurat": "Griha Pravesh Muhurat",
+                "bhoomipujanmuhurat": "Bhoomi Pujan Muhurat",
+                "propertypurchasemuhurat": "Property Purchase Muhurat",
+                "vivahmuhurat": "Vivah Muhurat",
+                "naamkaranmuhurat": "Naamkaran Muhurat",
+                "mundanmuhurat": "Mundan Muhurat",
+                "annaprashanmuhurat": "Annaprashan Muhurat",
+                "upanayanammuhurat": "Upanayanam Muhurat",
+                "vahanpujamuhurat": "Vahan Puja Muhurat",
+                "vyaparmuhurat": "Vyapar / New Business Muhurat",
+                "goldandvaluablesmuhurat": "Gold and Valuables Muhurat"
+            }
+            if normalized_title in title_mapping:
+                target_cat = title_mapping[normalized_title]
+                categories_to_check = {target_cat: self.MUHURAT_RULES[target_cat]}
+            else:
+                return JsonResponse({"error": f"Invalid title parameter: {title_param}"}, status=400)
+
         # Temporarily patch the GET 'date' param so GeoLocationMixin resolves correctly
         original_get = request.GET.copy()
         request.GET = request.GET.copy()
@@ -981,7 +1005,7 @@ class GlobalMoohratsAPIView(View, GeoLocationMixin):
         else:
             _, _, resolved_location, tz_name, numeric_tz, lat, lon = geo_data
             
-        moohrats_payload = {cat: {} for cat in self.MUHURAT_RULES.keys()}
+        moohrats_payload = {cat: {} for cat in categories_to_check.keys()}
         num_days = calendar.monthrange(year, month)[1]
         month_name = calendar.month_name[month]
         
@@ -1022,7 +1046,7 @@ class GlobalMoohratsAPIView(View, GeoLocationMixin):
                     
             auspicious_times_list = auspicious_times_list[:3]
             
-            for category, rules in self.MUHURAT_RULES.items():
+            for category, rules in categories_to_check.items():
                 is_suitable = True
                 
                 if weekday_idx in rules["avoid_varas"]:
