@@ -61,24 +61,40 @@ class GeoLocationMixin:
 
         if location_param:
             cache_key = f"geo_{location_param.strip().lower()}"
-            cached_data = cache.get(cache_key)
+            # A cache read must never fail the request. Workers sharing the file-based
+            # cache can hit a locked or half-written entry, and Django's FileBasedCache
+            # only swallows FileNotFoundError - anything else would surface as a 500.
+            try:
+                cached_data = cache.get(cache_key)
+            except Exception as e:
+                print(f"WARNING: Geo cache read failed for '{location_param}' ({str(e)}). Treating as a miss.")
+                cached_data = None
+
             if cached_data:
                 lat, lon, tz_name, resolved_location = cached_data
             else:
+                resolved_ok = False
                 try:
                     geo_data = self.geocoding_agent.geocode(location_param, timeout=5)
                     if geo_data:
                         lat, lon = geo_data.latitude, geo_data.longitude #type: ignore
                         resolved_location = location_param
                         tz_name = self.tz_finder.timezone_at(lng=lon, lat=lat) or self.DEFAULT_TZ
-                        # Cache the resolved geocoding result persistently
-                        cache.set(cache_key, (lat, lon, tz_name, resolved_location), 86400 * 30)
+                        resolved_ok = True
                     else:
                         print(f"WARNING: Could not resolve location '{location_param}'. Falling back to Ujjain.")
                         lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
                 except Exception as e:
                     print(f"WARNING: Geocoding error for '{location_param}' ({str(e)}). Falling back to Ujjain.")
                     lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
+
+                # Persisted outside the geocoding try-block: a failed cache write must not
+                # discard coordinates that were already resolved correctly.
+                if resolved_ok:
+                    try:
+                        cache.set(cache_key, (lat, lon, tz_name, resolved_location), 86400 * 30)
+                    except Exception as e:
+                        print(f"WARNING: Geo cache write failed for '{location_param}' ({str(e)}).")
         else:
             lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
 
@@ -1000,78 +1016,84 @@ class GlobalMoohratsAPIView(View, GeoLocationMixin):
         else:
             categories_to_check = self.MUHURAT_RULES
 
-        # Temporarily patch the GET 'date' param so GeoLocationMixin resolves correctly
-        original_get = request.GET.copy()
-        request.GET = request.GET.copy()
-        request.GET["date"] = f"{year}-{month:02d}-01"
+        try:
+            # Temporarily patch the GET 'date' param so GeoLocationMixin resolves correctly
+            original_get = request.GET.copy()
+            request.GET = request.GET.copy()
+            request.GET["date"] = f"{year}-{month:02d}-01"
         
-        geo_data = self.resolve_location_and_tz(request)
-        request.GET = original_get # Restore original query params
+            geo_data = self.resolve_location_and_tz(request)
+            request.GET = original_get # Restore original query params
         
-        if not geo_data[0]:
-            lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
-            numeric_tz = 5.5
-        else:
-            _, _, resolved_location, tz_name, numeric_tz, lat, lon = geo_data
+            if not geo_data[0]:
+                lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
+                numeric_tz = 5.5
+            else:
+                _, _, resolved_location, tz_name, numeric_tz, lat, lon = geo_data
             
-        moohrats_payload = {cat: {} for cat in categories_to_check.keys()}
-        num_days = calendar.monthrange(year, month)[1]
-        month_name = calendar.month_name[month]
+            moohrats_payload = {cat: {} for cat in categories_to_check.keys()}
+            num_days = calendar.monthrange(year, month)[1]
+            month_name = calendar.month_name[month]
         
-        swe.set_sid_mode(swe.SIDM_LAHIRI)
-        calc_flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
+            swe.set_sid_mode(swe.SIDM_LAHIRI)
+            calc_flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
         
-        for d in range(1, num_days + 1):
-            target_dt = datetime(year, month, d, 12, 0, 0)
-            utc_dt = target_dt - timedelta(hours=numeric_tz)
-            jd_now = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
+            for d in range(1, num_days + 1):
+                target_dt = datetime(year, month, d, 12, 0, 0)
+                utc_dt = target_dt - timedelta(hours=numeric_tz)
+                jd_now = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
             
-            try:
-                sun_long = swe.calc_ut(jd_now, swe.SUN, calc_flags)[0][0]
-                moon_long = swe.calc_ut(jd_now, swe.MOON, calc_flags)[0][0]
-            except Exception:
-                continue
+                try:
+                    sun_long = swe.calc_ut(jd_now, swe.SUN, calc_flags)[0][0]
+                    moon_long = swe.calc_ut(jd_now, swe.MOON, calc_flags)[0][0]
+                except Exception:
+                    continue
                 
-            elongation = (moon_long - sun_long) % 360
-            tithi_idx = int(elongation // 12) + 1
-            if tithi_idx > 30: tithi_idx = 30
+                elongation = (moon_long - sun_long) % 360
+                tithi_idx = int(elongation // 12) + 1
+                if tithi_idx > 30: tithi_idx = 30
             
-            nak_idx = int(moon_long // (360 / 27)) % 27
-            weekday_idx = target_dt.weekday()
+                nak_idx = int(moon_long // (360 / 27)) % 27
+                weekday_idx = target_dt.weekday()
             
-            date_str = target_dt.strftime("%Y-%m-%d")
+                date_str = target_dt.strftime("%Y-%m-%d")
             
-            sunrise, sunset = self._get_sunrise_sunset(target_dt, lat, lon, numeric_tz)
-            day_length_sec = (sunset - sunrise).total_seconds()
-            part_duration = day_length_sec / 8
+                sunrise, sunset = self._get_sunrise_sunset(target_dt, lat, lon, numeric_tz)
+                day_length_sec = (sunset - sunrise).total_seconds()
+                part_duration = day_length_sec / 8
             
-            choghadiya_order = self.WEEKDAY_CHOGHADIYA_ORDER[weekday_idx]
-            auspicious_times_list = []
-            for i, ch_name in enumerate(choghadiya_order):
-                if self.CHOGHADIYA_TYPES[ch_name] == "auspicious":
-                    start_time = sunrise + timedelta(seconds=i * part_duration)
-                    end_time = start_time + timedelta(seconds=part_duration)
-                    auspicious_times_list.append(f"{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
+                choghadiya_order = self.WEEKDAY_CHOGHADIYA_ORDER[weekday_idx]
+                auspicious_times_list = []
+                for i, ch_name in enumerate(choghadiya_order):
+                    if self.CHOGHADIYA_TYPES[ch_name] == "auspicious":
+                        start_time = sunrise + timedelta(seconds=i * part_duration)
+                        end_time = start_time + timedelta(seconds=part_duration)
+                        auspicious_times_list.append(f"{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
                     
-            auspicious_times_list = auspicious_times_list[:3]
+                auspicious_times_list = auspicious_times_list[:3]
             
-            for category, rules in categories_to_check.items():
-                is_suitable = True
+                for category, rules in categories_to_check.items():
+                    is_suitable = True
                 
-                if weekday_idx in rules["avoid_varas"]:
-                    is_suitable = False
+                    if weekday_idx in rules["avoid_varas"]:
+                        is_suitable = False
                     
-                if tithi_idx not in rules["tithis"]:
-                    is_suitable = False
+                    if tithi_idx not in rules["tithis"]:
+                        is_suitable = False
                     
-                if nak_idx not in rules["naks"]:
-                    is_suitable = False
+                    if nak_idx not in rules["naks"]:
+                        is_suitable = False
                     
-                if is_suitable:
-                    if month_name not in moohrats_payload[category]:
-                        moohrats_payload[category][month_name] = {}
-                    moohrats_payload[category][month_name][date_str] = auspicious_times_list
+                    if is_suitable:
+                        if month_name not in moohrats_payload[category]:
+                            moohrats_payload[category][month_name] = {}
+                        moohrats_payload[category][month_name][date_str] = auspicious_times_list
                     
-        return JsonResponse(sanitize_missing_values({
-            "moohrats": moohrats_payload
-        }), json_dumps_params={'indent': 2})
+            return JsonResponse(sanitize_missing_values({
+                "moohrats": moohrats_payload
+            }), json_dumps_params={'indent': 2})
+        except Exception as e:
+            return JsonResponse({
+                "error": "Muhurat calculation failed",
+                "detail": str(e)
+            }, status=500)
