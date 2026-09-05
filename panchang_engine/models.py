@@ -11,6 +11,5 @@ class GlobalPanchangAlmanac(models.Model):
 
     class Meta:
         unique_together = ('calculation_date', 'requested_city')
-
     def __str__(self):
-        return f"{self.requested_city} - {self.calculation_date}"
+        return f"{self.requested_city} - {self.calculation_date}"

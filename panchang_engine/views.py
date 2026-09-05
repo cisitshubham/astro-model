@@ -2,10 +2,22 @@ import pytz
 import math
 import random
 import swisseph as swe
+# Patch swisseph.calc_ut to return a 2-tuple for compatibility with dashaflow
+_orig_calc_ut = swe.calc_ut
+def patched_calc_ut(*args, **kwargs):
+    res = _orig_calc_ut(*args, **kwargs)
+    if isinstance(res, tuple) and len(res) == 3:
+        return (res[0], res[1])
+    return res
+swe.calc_ut = patched_calc_ut
+
 from datetime import datetime, timedelta
 from django.http import JsonResponse
 from django.views import View
+from django.core.cache import cache
 from geopy.geocoders import Nominatim
+# Import dashaflow modules for dynamic calculation engine
+import dashaflow as df
 from timezonefinder import TimezoneFinder
 
 # Import your untouched engine logic safely
@@ -13,12 +25,14 @@ from panchang_engine.engine import EphemerisComputationalEngine
 
 def sanitize_missing_values(data):
     if isinstance(data, dict):
-        return {k: sanitize_missing_values(v) for k, v in data.items()}
+        return {k: (v if k == "overLap" and v == "" else sanitize_missing_values(v)) for k, v in data.items()}
     elif isinstance(data, list):
         return [sanitize_missing_values(x) for x in data]
-    elif data is None or data == "" or data == "N/A" or data == "unknown" or data == "Unknown":
+    elif data is None or data == "" or data == "unknown" or data == "Unknown":
         return "-"
     return data
+
+
 
 # =====================================================================
 # GLOBAL GEOLOCATION MIXIN (Shared Framework across Endpoint Classes)
@@ -46,16 +60,41 @@ class GeoLocationMixin:
             return None, None, None, None, None, None, None
 
         if location_param:
+            cache_key = f"geo_{location_param.strip().lower()}"
+            # A cache read must never fail the request. Workers sharing the file-based
+            # cache can hit a locked or half-written entry, and Django's FileBasedCache
+            # only swallows FileNotFoundError - anything else would surface as a 500.
             try:
-                geo_data = self.geocoding_agent.geocode(location_param, timeout=5)
-                if geo_data:
-                    lat, lon = geo_data.latitude, geo_data.longitude #type: ignore
-                    resolved_location = location_param
-                    tz_name = self.tz_finder.timezone_at(lng=lon, lat=lat) or self.DEFAULT_TZ
-                else:
+                cached_data = cache.get(cache_key)
+            except Exception as e:
+                print(f"WARNING: Geo cache read failed for '{location_param}' ({str(e)}). Treating as a miss.")
+                cached_data = None
+
+            if cached_data:
+                lat, lon, tz_name, resolved_location = cached_data
+            else:
+                resolved_ok = False
+                try:
+                    geo_data = self.geocoding_agent.geocode(location_param, timeout=5)
+                    if geo_data:
+                        lat, lon = geo_data.latitude, geo_data.longitude #type: ignore
+                        resolved_location = location_param
+                        tz_name = self.tz_finder.timezone_at(lng=lon, lat=lat) or self.DEFAULT_TZ
+                        resolved_ok = True
+                    else:
+                        print(f"WARNING: Could not resolve location '{location_param}'. Falling back to Ujjain.")
+                        lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
+                except Exception as e:
+                    print(f"WARNING: Geocoding error for '{location_param}' ({str(e)}). Falling back to Ujjain.")
                     lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
-            except Exception:
-                lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
+
+                # Persisted outside the geocoding try-block: a failed cache write must not
+                # discard coordinates that were already resolved correctly.
+                if resolved_ok:
+                    try:
+                        cache.set(cache_key, (lat, lon, tz_name, resolved_location), 86400 * 30)
+                    except Exception as e:
+                        print(f"WARNING: Geo cache write failed for '{location_param}' ({str(e)}).")
         else:
             lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
 
@@ -130,9 +169,11 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
         utc_dt = target_dt - timedelta(hours=numeric_tz)
         jd_now = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
         
-        # 2. LOCAL Midnight Setup for accurate daily Rise/Set lookups
-        # Prevents swisseph from missing mornings when UTC shifts ahead of local time zone ranges
-        jd_local_midnight = swe.julday(target_dt.year, target_dt.month, target_dt.day, 0.0) - (numeric_tz / 24.0)
+        # 2. Setup strict calendar date boundaries (00:00:00 local time for the target day)
+        local_midnight_dt = datetime(target_dt.year, target_dt.month, target_dt.day, 0, 0, 0)
+        utc_midnight_dt = local_midnight_dt - timedelta(hours=numeric_tz)
+        jd_local_midnight = swe.julday(utc_midnight_dt.year, utc_midnight_dt.month, utc_midnight_dt.day, 
+                                       utc_midnight_dt.hour + utc_midnight_dt.minute/60.0)
 
         # Initialize Lahiri Sidereal structural engine properties
         swe.set_sid_mode(swe.SIDM_LAHIRI)
@@ -209,12 +250,14 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
         MONTHS_POOL = ["Chaitra", "Vaisakha", "Jyaistha", "Asadha", "Sravana", "Bhadrapada", "Asvina", "Kartika", "Margasirsa", "Pausa", "Magha", "Phalguna"]
 
         # --- Dynamic Horizon Calculations ---
-        # Note: pyswisseph takes longitude before latitude, and tracks atmospheric refraction by default.
         horizon_flags = swe.BIT_DISC_CENTER
         
         geopos = (lon, lat, 0.0)
+        jd_search_start = jd_local_midnight - (2.0 / 24.0)
 
-        # Sun Horizon calculations
+        # Check if the coordinates are near Ujjain (~23.17 N, ~75.78 E) to isolate fallback logic
+        is_ujjain = (22.8 <= lat <= 23.5) and (75.2 <= lon <= 76.3)
+
         try:
             sunrise_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags | swe.CALC_RISE, geopos)[1][0]
             sunset_jd = swe.rise_trans(jd_local_midnight, swe.SUN, horizon_flags | swe.CALC_SET, geopos)[1][0]
@@ -301,9 +344,59 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
                 end = start + timedelta(seconds=duration_sec)
                 return f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}"
 
-            abhijit_range = make_range_string(astro["sunrise"], (day_length_sec / 2) - 1440, 2880)
+            # Abhijit Muhurat is not calculated on Wednesdays (Budhavara)
+            if target_dt.weekday() == 2:
+                abhijit_range = "-"
+            else:
+                abhijit_range = make_range_string(astro["sunrise"], (day_length_sec / 2) - 1440, 2880)
             rahu_parts_mapping = {0: 1, 1: 6, 2: 4, 3: 5, 4: 3, 5: 2, 6: 7}
             rahu_range = make_range_string(astro["sunrise"], part_duration * rahu_parts_mapping.get(target_dt.weekday(), 1), part_duration)
+
+            # Calculate overlap between Abhijit Muhurat and Rahu Kaal
+            overlap_str = ""
+            if target_dt.weekday() != 2:
+                abhijit_start = astro["sunrise"] + timedelta(seconds=(day_length_sec / 2) - 1440)
+                abhijit_end = abhijit_start + timedelta(seconds=2880)
+                
+                rahu_start = astro["sunrise"] + timedelta(seconds=part_duration * rahu_parts_mapping.get(target_dt.weekday(), 1))
+                rahu_end = rahu_start + timedelta(seconds=part_duration)
+                
+                overlap_start = max(abhijit_start, rahu_start)
+                overlap_end = min(abhijit_end, rahu_end)
+                
+                if overlap_start < overlap_end:
+                    overlap_duration_seconds = (overlap_end - overlap_start).total_seconds()
+                    overlap_minutes = int(round(overlap_duration_seconds / 60))
+                    
+                    if overlap_minutes > 0:
+                        if rahu_start <= abhijit_start:
+                            overlap_position = "first"
+                            pure_half_name = "second half"
+                            pure_start = overlap_end + timedelta(minutes=1)
+                            pure_end = abhijit_end
+                        else:
+                            overlap_position = "final"
+                            pure_half_name = "first half"
+                            pure_start = abhijit_start
+                            pure_end = overlap_start - timedelta(minutes=1)
+                        
+                        overlap_start_fmt = overlap_start.strftime("%I:%M %p")
+                        overlap_end_fmt = overlap_end.strftime("%I:%M %p")
+                        pure_start_fmt = pure_start.strftime("%I:%M %p")
+                        pure_end_fmt = pure_end.strftime("%I:%M %p")
+                        
+                        if overlap_start_fmt.startswith("0"): overlap_start_fmt = overlap_start_fmt[1:]
+                        if overlap_end_fmt.startswith("0"): overlap_end_fmt = overlap_end_fmt[1:]
+                        if pure_start_fmt.startswith("0"): pure_start_fmt = pure_start_fmt[1:]
+                        if pure_end_fmt.startswith("0"): pure_end_fmt = pure_end_fmt[1:]
+                        
+                        overlap_str = (
+                            f"⚠️ SYSTEM OVERLAP DETECTED ({overlap_start_fmt} - {overlap_end_fmt}):\n"
+                            f"\"The {overlap_position} {overlap_minutes} minutes of Abhijit intersect with Rahu Kaal. "
+                            f"While Abhijit remains structurally active, it is highly recommended to initiate your "
+                            f"critical tasks during the pure, un-afflicted {pure_half_name} ({pure_start_fmt} to {pure_end_fmt}) for maximum success.\""
+                        )
+
 
             # Dynamic Era Calendars calculation
             shaka_year = target_dt.year - 78 if target_dt.month > 3 else target_dt.year - 79
@@ -325,6 +418,7 @@ class GlobalPanchangAPIView(View, GeoLocationMixin):
                     "sunrise": astro["sunrise"].strftime("%H:%M"),
                     "abhijeet_moohrat": abhijit_range,
                     "rahukal": rahu_range,
+                    "overLap": overlap_str,
                     "sunset": astro["sunset"].strftime("%H:%M"),
                     "moonrise": astro["moonrise"].strftime("%H:%M"),
                     "moonset": astro["moonset"].strftime("%H:%M"),
@@ -358,17 +452,26 @@ class GlobalTransitsAPIView(View, GeoLocationMixin):
         GeoLocationMixin.__init__(self)
         self.ZODIAC_SIGNS = ["Aries", "Taurus", "Gemini", "Cancer", "Leo", "Virgo", "Libra", "Scorpio", "Sagittarius", "Capricorn", "Aquarius", "Pisces"]
         
+        # Consistent data dictionary mapping for accurate themes
         self.THEME_MAP = {
-            "Jupiter": {"theme": "expansion and growth", "affects": ["personal development", "career", "adventure"]},
-            "Saturn": {"theme": "reflection and reassessment", "affects": ["responsibilities", "long-term goals", "structure"]},
-            "Neptune": {"theme": "creativity and romance", "affects": ["relationships", "artistic expression", "intuition"]},
-            "Mars": {"theme": "passion and leadership", "affects": ["confidence", "self-expression", "initiative"]},
             "Sun": {"theme": "vitality and identity", "affects": ["self-image", "clarity", "recognition"]},
-            "Moon": {"theme": "emotional shifts", "affects": ["mood", "intuition", "domestic life"]},
             "Mercury": {"theme": "intellect and trade", "affects": ["communication", "commerce", "travel"]},
             "Venus": {"theme": "harmony and attraction", "affects": ["finances", "romance", "values"]},
+            "Mars": {"theme": "passion and leadership", "affects": ["confidence", "self-expression", "initiative"]},
+            "Jupiter": {"theme": "new beginnings and expansion", "affects": ["personal growth", "adventure", "leadership"]},
+            "Saturn": {"theme": "reflection and responsibility", "affects": ["responsibilities", "long-term goals", "structure"]},
             "Uranus": {"theme": "revolution and change", "affects": ["innovation", "freedom", "breakthroughs"]},
+            "Neptune": {"theme": "creativity and romance", "affects": ["relationships", "artistic expression", "spirituality"]},
             "Pluto": {"theme": "transformation and power", "affects": ["renewal", "psychic depths", "regeneration"]}
+        }
+
+        # Major geometric aspect filters
+        self.ASPECTS = {
+            0: {"name": "Conjunction", "intensity": "very_high"},
+            60: {"name": "Sextile", "intensity": "medium"},
+            90: {"name": "Square", "intensity": "high"},
+            120: {"name": "Trine", "intensity": "high"},
+            180: {"name": "Opposition", "intensity": "very_high"}
         }
 
     def get(self, request, *args, **kwargs):
@@ -376,27 +479,35 @@ class GlobalTransitsAPIView(View, GeoLocationMixin):
         if not geo_data[0]:
             return JsonResponse({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
             
-        date_param, target_dt, resolved_location, _, numeric_tz, _, _ = geo_data
+        date_param, target_dt, resolved_location, _, numeric_tz, lat, lon = geo_data
 
         transits_list = []
+        seen_planets = set()
+        
+        # Complete non-lunar tracking setup to drop Moon repetitions completely
         swe_planets = {
-            "Sun": swe.SUN, "Moon": swe.MOON, "Mercury": swe.MERCURY, "Venus": swe.VENUS, 
-            "Mars": swe.MARS, "Jupiter": swe.JUPITER, "Saturn": swe.SATURN, 
-            "Uranus": swe.URANUS, "Neptune": swe.NEPTUNE, "Pluto": swe.PLUTO
+            "Sun": swe.SUN, "Mercury": swe.MERCURY, "Venus": swe.VENUS, "Mars": swe.MARS,
+            "Jupiter": swe.JUPITER, "Saturn": swe.SATURN, "Uranus": swe.URANUS, 
+            "Neptune": swe.NEPTUNE, "Pluto": swe.PLUTO
         }
         
         swe.set_sid_mode(swe.SIDM_LAHIRI)
         calc_flag = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
 
         base_midnight = datetime(target_dt.year, target_dt.month, target_dt.day, 0, 0, 0)
-        
+        positions_noon = {}
+
+        # 1. Primary Sweep: Hourly calculation matrix for Ingresses, Stations, and Aspects
         for hour in range(0, 24):
             dt_current = base_midnight + timedelta(hours=hour)
             dt_next = dt_current + timedelta(hours=1)
             
             jd_curr = swe.julday(dt_current.year, dt_current.month, dt_current.day, dt_current.hour - numeric_tz)
             jd_next = swe.julday(dt_next.year, dt_next.month, dt_next.day, dt_next.hour - numeric_tz)
-            time_ist_str = (dt_current + timedelta(hours=numeric_tz)).strftime("%H:%M")
+            time_ist_str = dt_current.strftime("%H:%M")
+
+            positions_curr = {}
+            positions_next = {}
 
             for name, swe_id in swe_planets.items():
                 try:
@@ -681,3 +792,308 @@ class GlobalNumerologyAPIView(View):
             "date": date_param,
             "neumerology": numerology_payload
         }), json_dumps_params={'indent': 2})
+
+
+# =====================================================================
+# 5. STANDALONE HOROSCOPE ENDPOINT VIEW
+# =====================================================================
+class GlobalHoroscopeAPIView(View, GeoLocationMixin):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        GeoLocationMixin.__init__(self)
+
+    def get(self, request, *args, **kwargs):
+        geo_data = self.resolve_location_and_tz(request)
+        if not geo_data[0]:
+            return JsonResponse({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
+            
+        date_param, target_dt, resolved_location, tz_name, numeric_tz, lat, lon = geo_data
+
+        try:
+            engine = EphemerisComputationalEngine()
+            horoscopes = engine.get_daily_horoscopes(target_dt, lat, lon, tz_name)
+            
+            return JsonResponse(sanitize_missing_values({
+                "date": date_param,
+                "location": resolved_location,
+                "horoscope": horoscopes
+            }), json_dumps_params={'indent': 2})
+        except Exception as e:
+            return JsonResponse({
+                "error": "Horoscope calculation failed",
+                "detail": str(e)
+            }, status=500)
+
+
+# =====================================================================
+# 6. STANDALONE MOOHRATS ENDPOINT VIEW
+# =====================================================================
+class GlobalMoohratsAPIView(View, GeoLocationMixin):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        GeoLocationMixin.__init__(self)
+        
+        self.NAKSHATRAS = [
+            "Ashwini", "Bharani", "Krittika", "Rohini", "Mrigashira", "Ardra", "Punarvasu", "Pushya", "Ashlesha",
+            "Maghā", "Purva Phalguni", "Uttara Phalguni", "Hasta", "Chitra", "Swati", "Vishakha", "Anuradha", "Jyeshtha",
+            "Mula", "Purva Ashadha", "Uttara Ashadha", "Shravana", "Dhanishta", "Shatabhisha", "Purva Bhadrapada", "Uttara Bhadrapada", "Revati"
+        ]
+        
+        self.CHOGHADIYA_TYPES = {
+            "Udveg": "inauspicious",
+            "Chara": "neutral",
+            "Labha": "auspicious",
+            "Amrita": "auspicious",
+            "Kala": "inauspicious",
+            "Shubha": "auspicious",
+            "Roga": "inauspicious"
+        }
+
+        self.WEEKDAY_CHOGHADIYA_ORDER = {
+            0: ["Amrita", "Kala", "Shubha", "Roga", "Udveg", "Chara", "Labha", "Amrita"], # Monday
+            1: ["Roga", "Udveg", "Chara", "Labha", "Amrita", "Kala", "Shubha", "Roga"],  # Tuesday
+            2: ["Labha", "Amrita", "Kala", "Shubha", "Roga", "Udveg", "Chara", "Labha"], # Wednesday
+            3: ["Shubha", "Roga", "Udveg", "Chara", "Labha", "Amrita", "Kala", "Shubha"], # Thursday
+            4: ["Chara", "Labha", "Amrita", "Kala", "Shubha", "Roga", "Udveg", "Chara"], # Friday
+            5: ["Kala", "Shubha", "Roga", "Udveg", "Chara", "Labha", "Amrita", "Kala"],  # Saturday
+            6: ["Udveg", "Chara", "Labha", "Amrita", "Kala", "Shubha", "Roga", "Udveg"]  # Sunday
+        }
+
+        self.MUHURAT_RULES = {
+            "Griha Pravesh Muhurat": {
+                "naks": [3, 4, 13, 16, 11, 20, 25, 26, 7, 6, 14, 23],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1, 5, 6]  # Tuesday, Saturday, Sunday
+            },
+            "Bhoomi Pujan Muhurat": {
+                "naks": [3, 4, 13, 16, 17, 23, 22, 11, 20, 25, 12, 7],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1, 6]
+            },
+            "Property Purchase Muhurat": {
+                "naks": [4, 8, 9, 10, 12, 13, 14, 16, 17, 18, 19, 26, 3, 11, 20, 25],
+                "tithis": [1, 2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1]
+            },
+            "Vivah Muhurat": {
+                "naks": [3, 4, 9, 11, 12, 14, 16, 18, 20, 25, 26],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1]
+            },
+            "Naamkaran Muhurat": {
+                "naks": [0, 3, 4, 6, 7, 11, 12, 13, 14, 16, 20, 21, 22, 23, 25, 26],
+                "tithis": [1, 2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1]
+            },
+            "Mundan Muhurat": {
+                "naks": [17, 4, 7, 13, 12, 26, 0, 6, 14, 23],
+                "tithis": [2, 3, 5, 7, 10, 11, 13],
+                "avoid_varas": [1, 5, 6]
+            },
+            "Annaprashan Muhurat": {
+                "naks": [0, 3, 4, 6, 7, 11, 12, 13, 14, 16, 20, 21, 22, 23, 25, 26],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1, 5, 6]
+            },
+            "Upanayanam Muhurat": {
+                "naks": [0, 3, 4, 6, 7, 12, 13, 14, 16, 21, 22, 23, 26],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13],
+                "avoid_varas": [1, 5, 6]
+            },
+            "Vahan Puja Muhurat": {
+                "naks": [0, 3, 6, 7, 12, 13, 14, 16, 21, 23, 26],
+                "tithis": [1, 2, 3, 5, 7, 8, 10, 11, 12, 13, 15],
+                "avoid_varas": [5]
+            },
+            "Vyapar / New Business Muhurat": {
+                "naks": [7, 3, 4, 13, 16, 26, 0, 12, 14, 21, 23],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1]
+            },
+            "Gold and Valuables Muhurat": {
+                "naks": [7, 3, 4, 12, 13, 16, 26, 14, 0],
+                "tithis": [2, 3, 5, 7, 10, 11, 12, 13, 15],
+                "avoid_varas": [1, 5]
+            }
+        }
+
+    def _get_sunrise_sunset(self, target_date: datetime, lat: float, lon: float, tz_offset: float):
+        utc_date = target_date - timedelta(hours=tz_offset)
+        tjd = swe.julday(utc_date.year, utc_date.month, utc_date.day, 0.0)
+        geopos = (lon, lat, 0.0)
+        
+        try:
+            res_rise = swe.rise_trans(tjd, swe.SUN, swe.BIT_DISC_CENTER | swe.CALC_RISE, geopos)
+            res_set = swe.rise_trans(tjd, swe.SUN, swe.BIT_DISC_CENTER | swe.CALC_SET, geopos)
+            
+            def jd_to_local(jd):
+                ymd_hms = swe.revjul(jd)
+                dec_hour = ymd_hms[3]
+                hours = int(dec_hour)
+                minutes = int((dec_hour - hours) * 60)
+                seconds = int(round(((dec_hour - hours) * 60 - minutes) * 60))
+                if seconds >= 60:
+                    seconds = 0
+                    minutes += 1
+                if minutes >= 60:
+                    minutes = 0
+                    hours += 1
+                utc_dt = datetime(ymd_hms[0], ymd_hms[1], ymd_hms[2], hours, minutes, seconds)
+                return utc_dt + timedelta(hours=tz_offset)
+
+            return jd_to_local(res_rise[1][0]), jd_to_local(res_set[1][0])
+        except Exception:
+            base_sunrise = datetime(target_date.year, target_date.month, target_date.day, 6, 0)
+            base_sunset = datetime(target_date.year, target_date.month, target_date.day, 18, 30)
+            return base_sunrise, base_sunset
+
+    def get(self, request, *args, **kwargs):
+        import calendar
+        
+        month_param = request.GET.get("month")
+        year_param = request.GET.get("year")
+        
+        if not month_param or not year_param:
+            return JsonResponse({"error": "month and year parameters are required"}, status=400)
+            
+        try:
+            year = int(year_param)
+            if year < 1900 or year > 2100:
+                raise ValueError("Year out of reasonable bounds")
+        except ValueError:
+            return JsonResponse({"error": "Invalid year parameter. Must be an integer between 1900 and 2100"}, status=400)
+            
+        try:
+            if month_param.isdigit():
+                month = int(month_param)
+            else:
+                month_name_lower = month_param.strip().lower()
+                month_map = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
+                month_abbr_map = {m.lower(): i for i, m in enumerate(calendar.month_abbr) if m}
+                
+                if month_name_lower in month_map:
+                    month = month_map[month_name_lower]
+                elif month_name_lower in month_abbr_map:
+                    month = month_abbr_map[month_name_lower]
+                else:
+                    raise ValueError("Invalid month name")
+                    
+            if month < 1 or month > 12:
+                raise ValueError("Month out of range")
+        except ValueError:
+            return JsonResponse({"error": "Invalid month parameter. Must be 1-12 or a valid month name"}, status=400)
+            
+        # 3. Resolve optional title parameter(s)
+        title_param_list = request.GET.getlist("title")
+        titles = []
+        for tp in title_param_list:
+            if "," in tp:
+                titles.extend(item.strip().lower() for item in tp.split(",") if item.strip())
+            elif tp.strip():
+                titles.append(tp.strip().lower())
+
+        categories_to_check = {}
+        if titles:
+            title_mapping = {
+                "grihapraveshmuhurat": "Griha Pravesh Muhurat",
+                "bhoomipujanmuhurat": "Bhoomi Pujan Muhurat",
+                "propertypurchasemuhurat": "Property Purchase Muhurat",
+                "vivahmuhurat": "Vivah Muhurat",
+                "naamkaranmuhurat": "Naamkaran Muhurat",
+                "mundanmuhurat": "Mundan Muhurat",
+                "annaprashanmuhurat": "Annaprashan Muhurat",
+                "upanayanammuhurat": "Upanayanam Muhurat",
+                "vahanpujamuhurat": "Vahan Puja Muhurat",
+                "vyaparmuhurat": "Vyapar / New Business Muhurat",
+                "goldandvaluablesmuhurat": "Gold and Valuables Muhurat"
+            }
+            for t in titles:
+                if t in title_mapping:
+                    target_cat = title_mapping[t]
+                    categories_to_check[target_cat] = self.MUHURAT_RULES[target_cat]
+                else:
+                    return JsonResponse({"error": f"Invalid title parameter: {t}"}, status=400)
+        else:
+            categories_to_check = self.MUHURAT_RULES
+
+        try:
+            # Temporarily patch the GET 'date' param so GeoLocationMixin resolves correctly
+            original_get = request.GET.copy()
+            request.GET = request.GET.copy()
+            request.GET["date"] = f"{year}-{month:02d}-01"
+        
+            geo_data = self.resolve_location_and_tz(request)
+            request.GET = original_get # Restore original query params
+        
+            if not geo_data[0]:
+                lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
+                numeric_tz = 5.5
+            else:
+                _, _, resolved_location, tz_name, numeric_tz, lat, lon = geo_data
+            
+            moohrats_payload = {cat: {} for cat in categories_to_check.keys()}
+            num_days = calendar.monthrange(year, month)[1]
+            month_name = calendar.month_name[month]
+        
+            swe.set_sid_mode(swe.SIDM_LAHIRI)
+            calc_flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
+        
+            for d in range(1, num_days + 1):
+                target_dt = datetime(year, month, d, 12, 0, 0)
+                utc_dt = target_dt - timedelta(hours=numeric_tz)
+                jd_now = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
+            
+                try:
+                    sun_long = swe.calc_ut(jd_now, swe.SUN, calc_flags)[0][0]
+                    moon_long = swe.calc_ut(jd_now, swe.MOON, calc_flags)[0][0]
+                except Exception:
+                    continue
+                
+                elongation = (moon_long - sun_long) % 360
+                tithi_idx = int(elongation // 12) + 1
+                if tithi_idx > 30: tithi_idx = 30
+            
+                nak_idx = int(moon_long // (360 / 27)) % 27
+                weekday_idx = target_dt.weekday()
+            
+                date_str = target_dt.strftime("%Y-%m-%d")
+            
+                sunrise, sunset = self._get_sunrise_sunset(target_dt, lat, lon, numeric_tz)
+                day_length_sec = (sunset - sunrise).total_seconds()
+                part_duration = day_length_sec / 8
+            
+                choghadiya_order = self.WEEKDAY_CHOGHADIYA_ORDER[weekday_idx]
+                auspicious_times_list = []
+                for i, ch_name in enumerate(choghadiya_order):
+                    if self.CHOGHADIYA_TYPES[ch_name] == "auspicious":
+                        start_time = sunrise + timedelta(seconds=i * part_duration)
+                        end_time = start_time + timedelta(seconds=part_duration)
+                        auspicious_times_list.append(f"{start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
+                    
+                auspicious_times_list = auspicious_times_list[:3]
+            
+                for category, rules in categories_to_check.items():
+                    is_suitable = True
+                
+                    if weekday_idx in rules["avoid_varas"]:
+                        is_suitable = False
+                    
+                    if tithi_idx not in rules["tithis"]:
+                        is_suitable = False
+                    
+                    if nak_idx not in rules["naks"]:
+                        is_suitable = False
+                    
+                    if is_suitable:
+                        if month_name not in moohrats_payload[category]:
+                            moohrats_payload[category][month_name] = {}
+                        moohrats_payload[category][month_name][date_str] = auspicious_times_list
+                    
+            return JsonResponse(sanitize_missing_values({
+                "moohrats": moohrats_payload
+            }), json_dumps_params={'indent': 2})
+        except Exception as e:
+            return JsonResponse({
+                "error": "Muhurat calculation failed",
+                "detail": str(e)
+            }, status=500)

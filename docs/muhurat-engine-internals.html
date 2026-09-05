@@ -1,0 +1,1113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html { color-scheme: light dark; }
+  body { margin: 0; }
+  img { max-width: 100%; }
+  [hidden] { display: none !important; }
+</style>
+<title>Muhurat Engine Internals</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    /* almanac paper — cool, slightly indigo-biased neutrals */
+    --paper:        #f4f6f8;
+    --surface:      #ffffff;
+    --surface-sunk: #eceff3;
+    --rule:         #d8dde5;
+    --rule-soft:    #e6eaef;
+
+    --ink:          #171c26;
+    --ink-mid:      #4a5261;
+    --ink-soft:     #6d7686;
+
+    /* verdigris — oxidised brass instrument */
+    --accent:       #26766b;
+    --accent-deep:  #1b564e;
+    --accent-wash:  #e2f0ed;
+
+    /* the astronomical layer: computed values, ephemeris output */
+    --astro:        #4c5680;
+    --astro-wash:   #e8eaf3;
+
+    --pass:         #2f6b3f;
+    --pass-wash:    #e4efe6;
+    --warn:         #8f5b06;
+    --warn-wash:    #f7ecd9;
+    --crit:         #a8322a;
+    --crit-wash:    #f8e6e4;
+
+    --shadow: 0 1px 2px rgba(23,28,38,.05), 0 6px 18px -10px rgba(23,28,38,.16);
+
+    --display: "Spectral", Georgia, "Times New Roman", serif;
+    --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:        #12161d;
+      --surface:      #1a1f28;
+      --surface-sunk: #151a22;
+      --rule:         #2d3542;
+      --rule-soft:    #232a35;
+
+      --ink:          #e6eaf0;
+      --ink-mid:      #a5aebd;
+      --ink-soft:     #7f8898;
+
+      --accent:       #56b3a4;
+      --accent-deep:  #7fcbbd;
+      --accent-wash:  #18332f;
+
+      --astro:        #939ecb;
+      --astro-wash:   #22273a;
+
+      --pass:         #71b581;
+      --pass-wash:    #1a2b1f;
+      --warn:         #d6a052;
+      --warn-wash:    #2e2415;
+      --crit:         #e08a80;
+      --crit-wash:    #33201d;
+
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 22px -12px rgba(0,0,0,.7);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper:        #12161d;
+    --surface:      #1a1f28;
+    --surface-sunk: #151a22;
+    --rule:         #2d3542;
+    --rule-soft:    #232a35;
+
+    --ink:          #e6eaf0;
+    --ink-mid:      #a5aebd;
+    --ink-soft:     #7f8898;
+
+    --accent:       #56b3a4;
+    --accent-deep:  #7fcbbd;
+    --accent-wash:  #18332f;
+
+    --astro:        #939ecb;
+    --astro-wash:   #22273a;
+
+    --pass:         #71b581;
+    --pass-wash:    #1a2b1f;
+    --warn:         #d6a052;
+    --warn-wash:    #2e2415;
+    --crit:         #e08a80;
+    --crit-wash:    #33201d;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 22px -12px rgba(0,0,0,.7);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 16px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 0 28px 96px;
+  }
+
+  /* ---- reading column vs. full-width bands ---- */
+  .col { max-width: 68ch; }
+
+  /* ================= masthead ================= */
+  .masthead {
+    padding: 64px 0 34px;
+    border-bottom: 2px solid var(--ink);
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  h1 {
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: clamp(2.4rem, 6vw, 3.6rem);
+    line-height: 1.04;
+    letter-spacing: -.018em;
+    margin: 0;
+    text-wrap: balance;
+  }
+  .standfirst {
+    font-family: var(--display);
+    font-size: clamp(1.05rem, 2.2vw, 1.28rem);
+    line-height: 1.55;
+    color: var(--ink-mid);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .masthead-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 26px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    padding-top: 6px;
+  }
+  .masthead-meta b {
+    color: var(--ink);
+    font-weight: 500;
+  }
+
+  /* ================= the key idea ================= */
+  .thesis {
+    margin-top: 40px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .thesis-lede {
+    grid-column: 1 / -1;
+    background: var(--surface);
+    padding: 22px 26px;
+    font-family: var(--display);
+    font-size: 1.12rem;
+    line-height: 1.5;
+  }
+  .thesis-lede em { color: var(--accent); font-style: italic; }
+  .thesis-half {
+    background: var(--surface);
+    padding: 22px 26px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .thesis-half h4 {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .thesis-half p { margin: 0; font-size: 14.5px; color: var(--ink-mid); }
+  .thesis-half code { font-size: 12.5px; }
+  @media (max-width: 700px) {
+    .thesis { grid-template-columns: 1fr; }
+  }
+
+  /* ================= section rhythm ================= */
+  section { padding-top: 64px; }
+  h2 {
+    font-family: var(--display);
+    font-size: clamp(1.5rem, 3.4vw, 1.95rem);
+    font-weight: 600;
+    letter-spacing: -.012em;
+    line-height: 1.2;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+  .sec-head {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 12px;
+    margin-bottom: 26px;
+  }
+  .sec-num {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: .08em;
+    flex: none;
+    padding-top: 4px;
+  }
+  h3 {
+    font-family: var(--body);
+    font-size: 1rem;
+    font-weight: 600;
+    letter-spacing: -.005em;
+    margin: 32px 0 10px;
+  }
+  p { margin: 0 0 14px; }
+  p.col, ul.col, ol.col { max-width: 68ch; }
+
+  code {
+    font-family: var(--mono);
+    font-size: .855em;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule-soft);
+    border-radius: 3px;
+    padding: .1em .34em;
+    color: var(--accent-deep);
+  }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.65;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 3px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    margin: 0 0 18px;
+  }
+  pre code {
+    background: none; border: none; padding: 0;
+    color: var(--ink); font-size: inherit;
+  }
+  pre .c { color: var(--ink-soft); font-style: italic; }
+  pre .k { color: var(--astro); font-weight: 500; }
+
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible, summary:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  /* ================= pipeline stages ================= */
+  .stage {
+    display: grid;
+    grid-template-columns: 76px 1fr;
+    gap: 0 22px;
+    padding: 22px 0;
+    border-top: 1px solid var(--rule-soft);
+  }
+  .stage:first-of-type { border-top: 1px solid var(--rule); }
+  .stage-idx {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    color: var(--ink-soft);
+    text-transform: uppercase;
+    padding-top: 3px;
+  }
+  .stage-idx b {
+    display: block;
+    font-family: var(--display);
+    font-size: 1.75rem;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--accent);
+    letter-spacing: 0;
+    margin-bottom: 2px;
+  }
+  .stage-body h3 { margin-top: 0; }
+  .stage-body > *:last-child { margin-bottom: 0; }
+  .stage-src {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-soft);
+    margin-bottom: 10px;
+  }
+  @media (max-width: 640px) {
+    .stage { grid-template-columns: 1fr; gap: 4px; }
+    .stage-idx { display: flex; align-items: baseline; gap: 8px; }
+    .stage-idx b { font-size: 1.15rem; margin: 0; }
+  }
+
+  /* ================= gates ================= */
+  .gates {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin: 4px 0 20px;
+  }
+  .gate {
+    border: 1px solid var(--rule);
+    border-top: 3px solid var(--astro);
+    border-radius: 3px;
+    background: var(--surface);
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .gate h4 {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--astro);
+    font-weight: 600;
+  }
+  .gate .gate-expr {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--ink);
+    line-height: 1.5;
+  }
+  .gate p { margin: 0; font-size: 13.5px; color: var(--ink-mid); line-height: 1.5; }
+  @media (max-width: 760px) { .gates { grid-template-columns: 1fr; } }
+
+  /* ================= tables ================= */
+  .scroller {
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--surface);
+    margin-bottom: 10px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 13.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  th, td {
+    text-align: left;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--rule-soft);
+    white-space: nowrap;
+    vertical-align: top;
+  }
+  thead th {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    color: var(--ink-soft);
+    background: var(--surface-sunk);
+    border-bottom: 1px solid var(--rule);
+    position: sticky;
+    top: 0;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td.name { font-weight: 500; white-space: normal; min-width: 15ch; }
+  td.m, th.m { font-family: var(--mono); font-size: 12.5px; }
+  .caption {
+    font-size: 12.5px;
+    color: var(--ink-soft);
+    margin: 0 0 8px;
+    max-width: 78ch;
+  }
+
+  /* ================= choghadiya strip ================= */
+  .strip-frame {
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--surface);
+    padding: 20px 22px 18px;
+    overflow-x: auto;
+  }
+  .strip-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--ink-soft);
+    margin-bottom: 12px;
+    min-width: 640px;
+  }
+  .strip-head b { color: var(--ink); font-weight: 500; }
+  .strip {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 3px;
+    min-width: 640px;
+  }
+  .seg {
+    padding: 11px 9px 12px;
+    border-radius: 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule-soft);
+  }
+  .seg .i {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--ink-soft);
+    letter-spacing: .08em;
+  }
+  .seg .n { font-size: 13px; font-weight: 600; line-height: 1.15; }
+  .seg .t { font-family: var(--mono); font-size: 10.5px; color: var(--ink-mid); }
+  .seg.aus {
+    background: var(--pass-wash);
+    border-color: var(--pass);
+  }
+  .seg.aus .n { color: var(--pass); }
+  .seg.aus .t { color: var(--pass); }
+  .seg.drop { opacity: .82; }
+  .seg.drop.aus { background: var(--warn-wash); border-color: var(--warn); border-style: dashed; }
+  .seg.drop.aus .n, .seg.drop.aus .t { color: var(--warn); }
+  .strip-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 20px;
+    margin-top: 14px;
+    font-size: 12.5px;
+    color: var(--ink-mid);
+  }
+  .swatch {
+    display: inline-block;
+    width: 11px; height: 11px;
+    border-radius: 2px;
+    vertical-align: -1px;
+    margin-right: 6px;
+    border: 1px solid var(--rule);
+  }
+
+  /* ================= findings ================= */
+  .finding {
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--surface);
+    padding: 0;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+  .finding-top {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 15px 18px 13px;
+    border-left: 4px solid var(--ink-soft);
+  }
+  .finding.f-crit .finding-top { border-left-color: var(--crit); }
+  .finding.f-warn .finding-top { border-left-color: var(--warn); }
+  .finding.f-note .finding-top { border-left-color: var(--astro); }
+  .tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: 3px 7px;
+    border-radius: 2px;
+    flex: none;
+    margin-top: 3px;
+  }
+  .f-crit .tag { background: var(--crit-wash); color: var(--crit); }
+  .f-warn .tag { background: var(--warn-wash); color: var(--warn); }
+  .f-note .tag { background: var(--astro-wash); color: var(--astro); }
+  .finding-txt h4 {
+    margin: 0 0 4px;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.35;
+  }
+  .finding-txt p { margin: 0 0 8px; font-size: 14px; color: var(--ink-mid); }
+  .finding-txt p:last-child { margin-bottom: 0; }
+  .finding-txt pre { margin: 10px 0 4px; font-size: 12px; }
+
+  /* ================= misc ================= */
+  ul, ol { padding-left: 1.25em; margin: 0 0 14px; }
+  li { margin-bottom: 6px; }
+  li::marker { color: var(--accent); }
+
+  .callout {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--warn);
+    background: var(--warn-wash);
+    border-radius: 3px;
+    padding: 14px 18px;
+    margin: 0 0 18px;
+    font-size: 14.5px;
+    max-width: 74ch;
+  }
+  .callout p:last-child { margin-bottom: 0; }
+  .callout b { color: var(--warn); }
+
+  .kv {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 7px 20px;
+    font-size: 14px;
+    margin-bottom: 18px;
+    align-items: baseline;
+  }
+  .kv dt { font-family: var(--mono); font-size: 12.5px; color: var(--astro); }
+  .kv dd { margin: 0; color: var(--ink-mid); }
+  .kv dd b { color: var(--ink); font-weight: 500; }
+
+  .pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 2px;
+    background: var(--astro-wash);
+    color: var(--astro);
+    white-space: nowrap;
+  }
+  .pill.no { background: var(--crit-wash); color: var(--crit); }
+  .pill.yes { background: var(--pass-wash); color: var(--pass); }
+
+  tr.hit td { background: var(--pass-wash); }
+  tr.hit td.name { color: var(--pass); font-weight: 600; }
+  td.dim { color: var(--ink-soft); }
+
+  footer {
+    margin-top: 72px;
+    padding-top: 20px;
+    border-top: 2px solid var(--ink);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-soft);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 24px;
+    justify-content: space-between;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">Panchang Engine · Endpoint 6</div>
+    <h1>Muhurat Engine Internals</h1>
+    <p class="standfirst">How <code>/api/moohrats/</code> decides which dates in a month qualify as auspicious, and which clock windows it returns for them — traced through the code as it stands today.</p>
+    <div class="masthead-meta">
+      <span><b>GET</b> /api/moohrats/</span>
+      <span>views.py <b>815–1076</b></span>
+      <span>Class <b>GlobalMoohratsAPIView</b></span>
+      <span>Ephemeris <b>Swiss / Lahiri sidereal</b></span>
+    </div>
+  </header>
+
+  <div class="thesis">
+    <div class="thesis-lede">
+      The single most important thing about this endpoint: <em>the date and the time are decided by two completely independent mechanisms.</em> They never consult each other.
+    </div>
+    <div class="thesis-half">
+      <h4>The date — rule-filtered</h4>
+      <p>Each day of the month is tested against three astrological gates for the requested muhurat category. Pass all three and the date appears in the response.</p>
+    </div>
+    <div class="thesis-half">
+      <h4>The time — category-blind</h4>
+      <p>The clock windows are the day's auspicious <b>Choghadiya</b> slots, derived only from weekday and sunrise/sunset. Every category on a given date gets the <em>identical</em> time list.</p>
+    </div>
+  </div>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">§ 1</span>
+      <h2>Request contract</h2>
+    </div>
+
+    <p class="col">The endpoint is month-scoped, not day-scoped. One call evaluates every calendar day of the requested month.</p>
+
+    <pre><code><span class="c"># All 11 categories, default location (Ujjain)</span>
+GET /api/moohrats/?month=11&amp;year=2026
+
+<span class="c"># One category, explicit location</span>
+GET /api/moohrats/?month=November&amp;year=2026&amp;title=vivahmuhurat&amp;location=Mumbai
+
+<span class="c"># Several categories — repeat the param, or comma-separate</span>
+GET /api/moohrats/?month=11&amp;year=2026&amp;title=vivahmuhurat,mundanmuhurat</code></pre>
+
+    <dl class="kv">
+      <dt>month</dt>
+      <dd><b>Required.</b> <code>1</code>–<code>12</code>, a full name (<code>November</code>), or an abbreviation (<code>Nov</code>). Case-insensitive.</dd>
+      <dt>year</dt>
+      <dd><b>Required.</b> Integer, bounded to <code>1900</code>–<code>2100</code>.</dd>
+      <dt>title</dt>
+      <dd><b>Optional.</b> Lowercase, no spaces or slashes. Omit it and all 11 categories are computed. Accepts repeated params and comma-separated lists.</dd>
+      <dt>location</dt>
+      <dd><b>Optional.</b> Free-text city, geocoded via Nominatim and cached 30 days. Falls back to Ujjain silently on failure.</dd>
+    </dl>
+
+    <h3>Accepted <code>title</code> slugs</h3>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Slug</th><th>Resolves to category</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="m">grihapraveshmuhurat</td><td>Griha Pravesh Muhurat</td></tr>
+          <tr><td class="m">bhoomipujanmuhurat</td><td>Bhoomi Pujan Muhurat</td></tr>
+          <tr><td class="m">propertypurchasemuhurat</td><td>Property Purchase Muhurat</td></tr>
+          <tr><td class="m">vivahmuhurat</td><td>Vivah Muhurat</td></tr>
+          <tr><td class="m">naamkaranmuhurat</td><td>Naamkaran Muhurat</td></tr>
+          <tr><td class="m">mundanmuhurat</td><td>Mundan Muhurat</td></tr>
+          <tr><td class="m">annaprashanmuhurat</td><td>Annaprashan Muhurat</td></tr>
+          <tr><td class="m">upanayanammuhurat</td><td>Upanayanam Muhurat</td></tr>
+          <tr><td class="m">vahanpujamuhurat</td><td>Vahan Puja Muhurat</td></tr>
+          <tr><td class="m">vyaparmuhurat</td><td>Vyapar / New Business Muhurat</td></tr>
+          <tr><td class="m">goldandvaluablesmuhurat</td><td>Gold and Valuables Muhurat</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">An unrecognised slug fails the whole request with <code>400</code> — it is not skipped. Validation is strict and happens before any astronomy runs.</p>
+
+    <h3>Response shape</h3>
+    <pre><code>{
+  "moohrats": {
+    "&lt;Category Name&gt;": {
+      "&lt;Month Name&gt;": {
+        "YYYY-MM-DD": ["HH:MM - HH:MM", "HH:MM - HH:MM", "HH:MM - HH:MM"]
+      }
+    }
+  }
+}</code></pre>
+    <p class="col">A category with no qualifying day in that month serialises as an empty object <code>{}</code> — the <code>&lt;Month Name&gt;</code> key is only created on first hit. Note also that unlike the other five endpoints, this response carries <b>no <code>date</code> or <code>location</code> echo</b>; the caller cannot tell from the payload which coordinates the times were computed for.</p>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">§ 2</span>
+      <h2>The computation pipeline</h2>
+    </div>
+
+    <p class="col">Six stages, in the order the code executes them. Stages 1–2 run once per request; stages 3–6 run once per calendar day.</p>
+
+    <div class="stage">
+      <div class="stage-idx"><b>1</b>Once</div>
+      <div class="stage-body">
+        <h3>Validate, then resolve the observer</h3>
+        <div class="stage-src">views.py:934–1022</div>
+        <p>Month, year and title slugs are validated first. Then geolocation runs through the shared <code>GeoLocationMixin</code>, which expects a <code>date</code> query param the caller never sent — so the view temporarily writes one in, resolves, and restores the original query dict:</p>
+        <pre><code>request.GET["date"] = f"{year}-{month:02d}-01"   <span class="c"># synthetic</span>
+geo_data = self.resolve_location_and_tz(request)
+request.GET = original_get                       <span class="c"># restored</span></code></pre>
+        <p>This yields <code>lat</code>, <code>lon</code> and a single numeric UTC offset <code>numeric_tz</code>. Defaults on any failure: Ujjain, <code>23.1765°N 75.7885°E</code>, UTC+5.5.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-idx"><b>2</b>Once</div>
+      <div class="stage-body">
+        <h3>Arm the ephemeris</h3>
+        <div class="stage-src">views.py:1021–1022</div>
+        <pre><code>swe.set_sid_mode(swe.SIDM_LAHIRI)
+calc_flags = swe.FLG_SWIEPH | swe.FLG_SIDEREAL</code></pre>
+        <p>All longitudes below are <b>sidereal, Lahiri ayanamsa</b> — the standard Indian civil almanac convention. Swapping the sid mode would shift every nakshatra and tithi boundary.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-idx"><b>3</b>Per day</div>
+      <div class="stage-body">
+        <h3>Sample Sun and Moon at local noon</h3>
+        <div class="stage-src">views.py:1024–1033</div>
+        <p>The day is reduced to a <b>single instant — 12:00 local time</b> — converted to UT and turned into a Julian Day:</p>
+        <pre><code>target_dt = datetime(year, month, d, <span class="k">12, 0, 0</span>)
+utc_dt    = target_dt - timedelta(hours=numeric_tz)
+jd_now    = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day,
+                       utc_dt.hour + utc_dt.minute/60.0)
+
+sun_long  = swe.calc_ut(jd_now, swe.SUN,  calc_flags)[0][0]
+moon_long = swe.calc_ut(jd_now, swe.MOON, calc_flags)[0][0]</code></pre>
+        <p>If either <code>calc_ut</code> raises, the day is silently <code>continue</code>d — it simply never appears in the output, with no error surfaced.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-idx"><b>4</b>Per day</div>
+      <div class="stage-body">
+        <h3>Derive the three Panchang limbs</h3>
+        <div class="stage-src">views.py:1035–1040</div>
+        <p>Only three of the five limbs are used. Yoga and Karana are never computed here.</p>
+        <pre><code>elongation = (moon_long - sun_long) % 360
+tithi_idx  = int(elongation // 12) + 1     <span class="c"># 1..30, capped at 30</span>
+nak_idx    = int(moon_long // (360/27)) % 27   <span class="c"># 0..26</span>
+weekday_idx = target_dt.weekday()          <span class="c"># Mon=0 .. Sun=6</span></code></pre>
+        <ul class="col">
+          <li><b>Tithi</b> — Moon-minus-Sun elongation in 12° steps. <code>1–15</code> is Shukla Paksha, <code>16–30</code> is Krishna Paksha. This is an <em>absolute</em> 1–30 index, not a paksha-relative 1–15 one. That distinction turns out to matter a great deal (see <a href="#f1">Finding 1</a>).</li>
+          <li><b>Nakshatra</b> — Moon longitude in 13°20′ steps, <b>zero-indexed</b>: <code>0</code> = Ashwini … <code>26</code> = Revati.</li>
+          <li><b>Vara</b> — Python's <code>weekday()</code>, so Monday is <code>0</code>. The <code>avoid_varas</code> lists and the Choghadiya table both use this same convention consistently.</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-idx"><b>5</b>Per day</div>
+      <div class="stage-body">
+        <h3>Divide the daylight into eight Choghadiya</h3>
+        <div class="stage-src">views.py:904–932, 1044–1056</div>
+        <p>Sunrise and sunset come from <code>swe.rise_trans</code> with <code>BIT_DISC_CENTER</code>. Daylight is split into eight equal parts, each named by the weekday's Choghadiya rotation. Slots typed <code>auspicious</code> are collected, then <b>truncated to the first three</b>:</p>
+        <pre><code>day_length_sec = (sunset - sunrise).total_seconds()
+part_duration  = day_length_sec / 8
+
+for i, ch_name in enumerate(choghadiya_order):
+    if self.CHOGHADIYA_TYPES[ch_name] == "auspicious":
+        start = sunrise + timedelta(seconds=i * part_duration)
+        end   = start + timedelta(seconds=part_duration)
+        auspicious_times_list.append(f"{start:%H:%M} - {end:%H:%M}")
+
+auspicious_times_list = auspicious_times_list[:3]   <span class="c"># hard cap</span></code></pre>
+        <p>This list is built <b>before</b> and <b>outside</b> the category loop — which is precisely why every category sharing a date shares its times.</p>
+      </div>
+    </div>
+
+    <div class="stage">
+      <div class="stage-idx"><b>6</b>Per day</div>
+      <div class="stage-body">
+        <h3>Apply the three gates per category</h3>
+        <div class="stage-src">views.py:1058–1073</div>
+        <p>A plain conjunction — all three must hold, with no weighting, scoring or ranking:</p>
+        <pre><code>is_suitable = True
+if weekday_idx in rules["avoid_varas"]: is_suitable = False
+if tithi_idx not in rules["tithis"]:    is_suitable = False
+if nak_idx  not in rules["naks"]:       is_suitable = False
+
+if is_suitable:
+    moohrats_payload[category][month_name][date_str] = auspicious_times_list</code></pre>
+      </div>
+    </div>
+
+    <div class="gates">
+      <div class="gate">
+        <h4>Gate A · Vara</h4>
+        <div class="gate-expr">weekday_idx ∉ avoid_varas</div>
+        <p>Weekday blacklist. Tuesday (<code>1</code>) is excluded by ten of the eleven categories; Saturday and Sunday by several.</p>
+      </div>
+      <div class="gate">
+        <h4>Gate B · Tithi</h4>
+        <div class="gate-expr">tithi_idx ∈ tithis</div>
+        <p>Lunar-day whitelist. Every category's list stops at <code>15</code>, so this gate also acts as an unintended Paksha filter.</p>
+      </div>
+      <div class="gate">
+        <h4>Gate C · Nakshatra</h4>
+        <div class="gate-expr">nak_idx ∈ naks</div>
+        <p>Lunar-mansion whitelist, 9–16 of the 27 permitted depending on category. The most selective gate in practice.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">§ 3</span>
+      <h2>The rule matrix</h2>
+    </div>
+
+    <p class="col">The complete <code>MUHURAT_RULES</code> dictionary, defined at <code>views.py:846–901</code>. These are static, hand-authored constants — nothing here is derived, configurable or database-backed.</p>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th class="m">naks (0-indexed)</th>
+            <th class="m">tithis</th>
+            <th>Avoided varas</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="name">Griha Pravesh</td><td class="m">3 4 13 16 11 20 25 26 7 6 14 23</td><td class="m">2 3 5 7 10 11 12 13 15</td><td><span class="pill no">Tue</span> <span class="pill no">Sat</span> <span class="pill no">Sun</span></td></tr>
+          <tr><td class="name">Bhoomi Pujan</td><td class="m">3 4 13 16 17 23 22 11 20 25 12 7</td><td class="m">2 3 5 7 10 11 12 13 15</td><td><span class="pill no">Tue</span> <span class="pill no">Sun</span></td></tr>
+          <tr><td class="name">Property Purchase</td><td class="m">4 8 9 10 12 13 14 16 17 18 19 26 3 11 20 25</td><td class="m">1 2 3 5 7 10 11 12 13 15</td><td><span class="pill no">Tue</span></td></tr>
+          <tr><td class="name">Vivah</td><td class="m">3 4 9 11 12 14 16 18 20 25 26</td><td class="m">2 3 5 7 10 11 12 13 15</td><td><span class="pill no">Tue</span></td></tr>
+          <tr><td class="name">Naamkaran</td><td class="m">0 3 4 6 7 11 12 13 14 16 20 21 22 23 25 26</td><td class="m">1 2 3 5 7 10 11 12 13 15</td><td><span class="pill no">Tue</span></td></tr>
+          <tr><td class="name">Mundan</td><td class="m">17 4 7 13 12 26 0 6 14 23</td><td class="m">2 3 5 7 10 11 13</td><td><span class="pill no">Tue</span> <span class="pill no">Sat</span> <span class="pill no">Sun</span></td></tr>
+          <tr><td class="name">Annaprashan</td><td class="m">0 3 4 6 7 11 12 13 14 16 20 21 22 23 25 26</td><td class="m">2 3 5 7 10 11 12 13 15</td><td><span class="pill no">Tue</span> <span class="pill no">Sat</span> <span class="pill no">Sun</span></td></tr>
+          <tr><td class="name">Upanayanam</td><td class="m">0 3 4 6 7 12 13 14 16 21 22 23 26</td><td class="m">2 3 5 7 10 11 12 13</td><td><span class="pill no">Tue</span> <span class="pill no">Sat</span> <span class="pill no">Sun</span></td></tr>
+          <tr><td class="name">Vahan Puja</td><td class="m">0 3 6 7 12 13 14 16 21 23 26</td><td class="m">1 2 3 5 7 8 10 11 12 13 15</td><td><span class="pill no">Sat</span></td></tr>
+          <tr><td class="name">Vyapar / New Business</td><td class="m">7 3 4 13 16 26 0 12 14 21 23</td><td class="m">2 3 5 7 10 11 12 13 15</td><td><span class="pill no">Tue</span></td></tr>
+          <tr><td class="name">Gold &amp; Valuables</td><td class="m">7 3 4 12 13 16 26 14 0</td><td class="m">2 3 5 7 10 11 12 13 15</td><td><span class="pill no">Tue</span> <span class="pill no">Sat</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">The <code>naks</code> lists are unordered and contain no duplicates. Nakshatra <code>3</code> (Rohini), <code>4</code> (Mrigashira), <code>13</code> (Chitra) and <code>16</code> (Anuradha) recur across almost every category — they are the classic all-purpose auspicious mansions.</p>
+
+    <h3>Nakshatra index reference</h3>
+    <div class="scroller">
+      <table>
+        <thead><tr><th class="m">#</th><th>Name</th><th class="m">#</th><th>Name</th><th class="m">#</th><th>Name</th></tr></thead>
+        <tbody>
+          <tr><td class="m">0</td><td>Ashwini</td><td class="m">9</td><td>Maghā</td><td class="m">18</td><td>Mula</td></tr>
+          <tr><td class="m">1</td><td>Bharani</td><td class="m">10</td><td>Purva Phalguni</td><td class="m">19</td><td>Purva Ashadha</td></tr>
+          <tr><td class="m">2</td><td>Krittika</td><td class="m">11</td><td>Uttara Phalguni</td><td class="m">20</td><td>Uttara Ashadha</td></tr>
+          <tr><td class="m">3</td><td>Rohini</td><td class="m">12</td><td>Hasta</td><td class="m">21</td><td>Shravana</td></tr>
+          <tr><td class="m">4</td><td>Mrigashira</td><td class="m">13</td><td>Chitra</td><td class="m">22</td><td>Dhanishta</td></tr>
+          <tr><td class="m">5</td><td>Ardra</td><td class="m">14</td><td>Swati</td><td class="m">23</td><td>Shatabhisha</td></tr>
+          <tr><td class="m">6</td><td>Punarvasu</td><td class="m">15</td><td>Vishakha</td><td class="m">24</td><td>Purva Bhadrapada</td></tr>
+          <tr><td class="m">7</td><td>Pushya</td><td class="m">16</td><td>Anuradha</td><td class="m">25</td><td>Uttara Bhadrapada</td></tr>
+          <tr><td class="m">8</td><td>Ashlesha</td><td class="m">17</td><td>Jyeshtha</td><td class="m">26</td><td>Revati</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">§ 4</span>
+      <h2>How the clock windows are built</h2>
+    </div>
+
+    <p class="col">Seven Choghadiya names rotate across the eight daylight slots, so the eighth slot always repeats the first. Each name carries a fixed quality; only the three types marked auspicious are eligible.</p>
+
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Name</th><th>Quality</th><th>Name</th><th>Quality</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Amrita</td><td><span class="pill yes">auspicious</span></td><td class="name">Udveg</td><td><span class="pill no">inauspicious</span></td></tr>
+          <tr><td class="name">Shubha</td><td><span class="pill yes">auspicious</span></td><td class="name">Kala</td><td><span class="pill no">inauspicious</span></td></tr>
+          <tr><td class="name">Labha</td><td><span class="pill yes">auspicious</span></td><td class="name">Roga</td><td><span class="pill no">inauspicious</span></td></tr>
+          <tr><td class="name">Chara</td><td><span class="pill">neutral</span></td><td class="dim">—</td><td class="dim">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption"><b>Chara</b> is typed <code>neutral</code> and is therefore never returned, even though many traditional almanacs treat it as usable.</p>
+
+    <h3>Weekday rotation and what survives the cap</h3>
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Vara</th><th class="m">Slot 0</th><th class="m">1</th><th class="m">2</th><th class="m">3</th><th class="m">4</th><th class="m">5</th><th class="m">6</th><th class="m">7</th><th>Returned</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="name">Monday</td><td class="m">Amrita</td><td class="m">Kala</td><td class="m">Shubha</td><td class="m">Roga</td><td class="m">Udveg</td><td class="m">Chara</td><td class="m">Labha</td><td class="m">Amrita</td><td class="m">0, 2, 6 <span class="pill no">7 cut</span></td></tr>
+          <tr><td class="name">Tuesday</td><td class="m">Roga</td><td class="m">Udveg</td><td class="m">Chara</td><td class="m">Labha</td><td class="m">Amrita</td><td class="m">Kala</td><td class="m">Shubha</td><td class="m">Roga</td><td class="m">3, 4, 6</td></tr>
+          <tr><td class="name">Wednesday</td><td class="m">Labha</td><td class="m">Amrita</td><td class="m">Kala</td><td class="m">Shubha</td><td class="m">Roga</td><td class="m">Udveg</td><td class="m">Chara</td><td class="m">Labha</td><td class="m">0, 1, 3 <span class="pill no">7 cut</span></td></tr>
+          <tr><td class="name">Thursday</td><td class="m">Shubha</td><td class="m">Roga</td><td class="m">Udveg</td><td class="m">Chara</td><td class="m">Labha</td><td class="m">Amrita</td><td class="m">Kala</td><td class="m">Shubha</td><td class="m">0, 4, 5 <span class="pill no">7 cut</span></td></tr>
+          <tr><td class="name">Friday</td><td class="m">Chara</td><td class="m">Labha</td><td class="m">Amrita</td><td class="m">Kala</td><td class="m">Shubha</td><td class="m">Roga</td><td class="m">Udveg</td><td class="m">Chara</td><td class="m">1, 2, 4</td></tr>
+          <tr><td class="name">Saturday</td><td class="m">Kala</td><td class="m">Shubha</td><td class="m">Roga</td><td class="m">Udveg</td><td class="m">Chara</td><td class="m">Labha</td><td class="m">Amrita</td><td class="m">Kala</td><td class="m">1, 5, 6</td></tr>
+          <tr><td class="name">Sunday</td><td class="m">Udveg</td><td class="m">Chara</td><td class="m">Labha</td><td class="m">Amrita</td><td class="m">Kala</td><td class="m">Shubha</td><td class="m">Roga</td><td class="m">Udveg</td><td class="m">2, 3, 5</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">Monday, Wednesday and Thursday each have a fourth auspicious slot in position 7 — the late-afternoon repeat — which the <code>[:3]</code> cap discards. Tuesday, Friday, Saturday and Sunday have exactly three, so nothing is lost.</p>
+
+    <h3>Worked division — Friday 20 Nov 2026, Ujjain</h3>
+    <div class="strip-frame">
+      <div class="strip-head">
+        <span>Sunrise <b>06:44</b></span>
+        <span>Daylight <b>10 h 55 m</b> · slot <b>81.9 min</b></span>
+        <span>Sunset <b>17:40</b></span>
+      </div>
+      <div class="strip">
+        <div class="seg"><span class="i">0</span><span class="n">Chara</span><span class="t">06:44–08:06</span></div>
+        <div class="seg aus"><span class="i">1</span><span class="n">Labha</span><span class="t">08:06–09:28</span></div>
+        <div class="seg aus"><span class="i">2</span><span class="n">Amrita</span><span class="t">09:28–10:50</span></div>
+        <div class="seg"><span class="i">3</span><span class="n">Kala</span><span class="t">10:50–12:12</span></div>
+        <div class="seg aus"><span class="i">4</span><span class="n">Shubha</span><span class="t">12:12–13:34</span></div>
+        <div class="seg"><span class="i">5</span><span class="n">Roga</span><span class="t">13:34–14:56</span></div>
+        <div class="seg"><span class="i">6</span><span class="n">Udveg</span><span class="t">14:56–16:18</span></div>
+        <div class="seg"><span class="i">7</span><span class="n">Chara</span><span class="t">16:18–17:40</span></div>
+      </div>
+      <div class="strip-legend">
+        <span><span class="swatch" style="background:var(--pass-wash); border-color:var(--pass)"></span>Auspicious — returned</span>
+        <span><span class="swatch" style="background:var(--surface-sunk)"></span>Neutral or inauspicious — dropped</span>
+      </div>
+    </div>
+    <p class="caption">These three windows are exactly what the live endpoint returns for <code>2026-11-20</code>, for <em>every</em> category that qualifies on that date.</p>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">§ 5</span>
+      <h2>Worked example — Vivah, November 2026</h2>
+    </div>
+
+    <p class="col">The full month, traced at Ujjain. Two days out of thirty survive all three gates.</p>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>Date</th><th>Vara</th><th class="m">Tithi</th><th>Paksha</th><th class="m">Nak</th><th>Nakshatra</th><th>Vivah</th></tr>
+        </thead>
+        <tbody>
+          <tr><td class="m">2026-11-01</td><td>Sun</td><td class="m">22</td><td class="dim">Krishna</td><td class="m">7</td><td>Pushya</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-02</td><td>Mon</td><td class="m">23</td><td class="dim">Krishna</td><td class="m">8</td><td>Ashlesha</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-03</td><td>Tue</td><td class="m">25</td><td class="dim">Krishna</td><td class="m">9</td><td>Maghā</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-04</td><td>Wed</td><td class="m">26</td><td class="dim">Krishna</td><td class="m">10</td><td>Purva Phalguni</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-05</td><td>Thu</td><td class="m">27</td><td class="dim">Krishna</td><td class="m">11</td><td>Uttara Phalguni</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-06</td><td>Fri</td><td class="m">28</td><td class="dim">Krishna</td><td class="m">12</td><td>Hasta</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-07</td><td>Sat</td><td class="m">29</td><td class="dim">Krishna</td><td class="m">13</td><td>Chitra</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-08</td><td>Sun</td><td class="m">30</td><td class="dim">Krishna</td><td class="m">14</td><td>Swati</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-09</td><td>Mon</td><td class="m">30</td><td class="dim">Krishna</td><td class="m">15</td><td>Vishakha</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-10</td><td>Tue</td><td class="m">1</td><td>Shukla</td><td class="m">16</td><td>Anuradha</td><td class="dim">— <span class="pill no">Tue</span></td></tr>
+          <tr><td class="m">2026-11-11</td><td>Wed</td><td class="m">2</td><td>Shukla</td><td class="m">17</td><td>Jyeshtha</td><td class="dim">— <span class="pill no">nak</span></td></tr>
+          <tr><td class="m">2026-11-12</td><td>Thu</td><td class="m">3</td><td>Shukla</td><td class="m">17</td><td>Jyeshtha</td><td class="dim">— <span class="pill no">nak</span></td></tr>
+          <tr><td class="m">2026-11-13</td><td>Fri</td><td class="m">4</td><td>Shukla</td><td class="m">18</td><td>Mula</td><td class="dim">— <span class="pill no">tithi</span></td></tr>
+          <tr><td class="m">2026-11-14</td><td>Sat</td><td class="m">5</td><td>Shukla</td><td class="m">19</td><td>Purva Ashadha</td><td class="dim">— <span class="pill no">nak</span></td></tr>
+          <tr><td class="m">2026-11-15</td><td>Sun</td><td class="m">6</td><td>Shukla</td><td class="m">20</td><td>Uttara Ashadha</td><td class="dim">— <span class="pill no">tithi</span></td></tr>
+          <tr><td class="m">2026-11-16</td><td>Mon</td><td class="m">7</td><td>Shukla</td><td class="m">21</td><td>Shravana</td><td class="dim">— <span class="pill no">nak</span></td></tr>
+          <tr><td class="m">2026-11-17</td><td>Tue</td><td class="m">8</td><td>Shukla</td><td class="m">22</td><td>Dhanishta</td><td class="dim">— <span class="pill no">Tue</span></td></tr>
+          <tr><td class="m">2026-11-18</td><td>Wed</td><td class="m">9</td><td>Shukla</td><td class="m">23</td><td>Shatabhisha</td><td class="dim">— <span class="pill no">tithi</span></td></tr>
+          <tr><td class="m">2026-11-19</td><td>Thu</td><td class="m">10</td><td>Shukla</td><td class="m">24</td><td>Purva Bhadrapada</td><td class="dim">— <span class="pill no">nak</span></td></tr>
+          <tr class="hit"><td class="m">2026-11-20</td><td>Fri</td><td class="m">11</td><td>Shukla</td><td class="m">25</td><td>Uttara Bhadrapada</td><td class="name">MATCH</td></tr>
+          <tr class="hit"><td class="m">2026-11-21</td><td>Sat</td><td class="m">12</td><td>Shukla</td><td class="m">26</td><td>Revati</td><td class="name">MATCH</td></tr>
+          <tr><td class="m">2026-11-22</td><td>Sun</td><td class="m">13</td><td>Shukla</td><td class="m">0</td><td>Ashwini</td><td class="dim">— <span class="pill no">nak</span></td></tr>
+          <tr><td class="m">2026-11-23</td><td>Mon</td><td class="m">14</td><td>Shukla</td><td class="m">1</td><td>Bharani</td><td class="dim">— <span class="pill no">tithi</span></td></tr>
+          <tr><td class="m">2026-11-24</td><td>Tue</td><td class="m">15</td><td>Shukla</td><td class="m">2</td><td>Krittika</td><td class="dim">— <span class="pill no">Tue</span></td></tr>
+          <tr><td class="m">2026-11-25</td><td>Wed</td><td class="m">16</td><td class="dim">Krishna</td><td class="m">3</td><td>Rohini</td><td class="dim">— <span class="pill no">tithi</span></td></tr>
+          <tr><td class="m">2026-11-26</td><td>Thu</td><td class="m">17</td><td class="dim">Krishna</td><td class="m">4</td><td>Mrigashira</td><td class="dim">— <span class="pill no">tithi</span></td></tr>
+          <tr><td class="m">2026-11-27</td><td>Fri</td><td class="m">19</td><td class="dim">Krishna</td><td class="m">5</td><td>Ardra</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-28</td><td>Sat</td><td class="m">20</td><td class="dim">Krishna</td><td class="m">6</td><td>Punarvasu</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-29</td><td>Sun</td><td class="m">21</td><td class="dim">Krishna</td><td class="m">8</td><td>Ashlesha</td><td class="dim">—</td></tr>
+          <tr><td class="m">2026-11-30</td><td>Mon</td><td class="m">22</td><td class="dim">Krishna</td><td class="m">9</td><td>Maghā</td><td class="dim">—</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">Note <code>2026-11-25</code>: Rohini is in Vivah's <code>naks</code> and Wednesday is permitted, but <code>tithi_idx = 16</code> fails Gate B. In almanac terms that day is Krishna Pratipada — a paksha-relative tithi of 1. See Finding 1.</p>
+
+    <h3>Full-month yield, all 11 categories</h3>
+    <div class="scroller">
+      <table>
+        <thead><tr><th>Category</th><th class="m">Days</th><th>Qualifying dates</th></tr></thead>
+        <tbody>
+          <tr><td class="name">Griha Pravesh</td><td class="m">1</td><td class="m">20</td></tr>
+          <tr><td class="name">Bhoomi Pujan</td><td class="m">3</td><td class="m">11, 12, 20</td></tr>
+          <tr><td class="name">Property Purchase</td><td class="m">5</td><td class="m">11, 12, 14, 20, 21</td></tr>
+          <tr><td class="name">Vivah</td><td class="m">2</td><td class="m">20, 21</td></tr>
+          <tr><td class="name">Naamkaran</td><td class="m">4</td><td class="m">16, 20, 21, 22</td></tr>
+          <tr><td class="name">Mundan</td><td class="m">2</td><td class="m">11, 12</td></tr>
+          <tr><td class="name">Annaprashan</td><td class="m">2</td><td class="m">16, 20</td></tr>
+          <tr><td class="name">Upanayanam</td><td class="m">1</td><td class="m">16</td></tr>
+          <tr><td class="name">Vahan Puja</td><td class="m">3</td><td class="m">10, 16, 22</td></tr>
+          <tr><td class="name">Vyapar / New Business</td><td class="m">3</td><td class="m">16, 21, 22</td></tr>
+          <tr><td class="name">Gold &amp; Valuables</td><td class="m">1</td><td class="m">22</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">Every qualifying date in the month falls between the 10th and the 22nd — the Shukla Paksha window. This is a structural consequence of the tithi gate, not an astronomical coincidence.</p>
+  </section>
+
+  <section id="findings">
+    <div class="sec-head">
+      <span class="sec-num">§ 6</span>
+      <h2>Findings</h2>
+    </div>
+
+    <p class="col">Behaviours in the current implementation that are worth a decision — some are almost certainly bugs, others may be deliberate simplifications that should simply be documented for API consumers.</p>
+
+    <div class="finding f-crit" id="f1">
+      <div class="finding-top">
+        <span class="tag">Bug</span>
+        <div class="finding-txt">
+          <h4>1 · Krishna Paksha can never produce a muhurat</h4>
+          <p><code>tithi_idx</code> is computed on the absolute 1–30 scale, but the largest value in any category's <code>tithis</code> list is <code>15</code>. Every one of the ~15 Krishna Paksha days in every month therefore fails Gate B unconditionally, for all 11 categories.</p>
+          <p>The rule lists read as paksha-relative tithis (1–15), which is how almanacs normally express them. If that was the intent, the comparison needs a paksha-relative index:</p>
+          <pre><code><span class="c"># current — absolute 1..30</span>
+tithi_idx = int(elongation // 12) + 1
+
+<span class="c"># paksha-relative 1..15, if that is what the rules mean</span>
+tithi_rel = (int(elongation // 12) % 15) + 1</code></pre>
+          <p>Treat this as a product decision, not just a code fix: it roughly doubles the number of dates returned. Traditional practice does permit many muhurats in Krishna Paksha tithis 1–10, so the current output is materially narrower than a printed panchang would give.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="finding f-crit">
+      <div class="finding-top">
+        <span class="tag">Bug</span>
+        <div class="finding-txt">
+          <h4>2 · Time windows run backwards east of about UTC+7</h4>
+          <p><code>_get_sunrise_sunset</code> starts its search at <code>00:00 UT</code> on the UTC-shifted date. When the timezone offset exceeds the local sunrise hour, that start point is already past sunrise, so <code>rise_trans</code> returns the <em>next</em> day's sunrise while <code>set_trans</code> returns the current day's sunset. <code>day_length_sec</code> goes negative and every window is emitted end-before-start.</p>
+          <pre><code>2026-11-20, verified against the running code
+
+Ujjain  +5.5   rise 11-20 06:44   set 11-20 17:40    +10.92 h   ok
+Bangkok +7.0   rise 11-21 06:21   set 11-20 17:46    -12.59 h   broken
+Tokyo   +9.0   rise 11-21 06:24   set 11-20 16:31    -13.89 h   broken
+Sydney  +11.0  rise 11-21 05:42   set 11-20 19:40    -10.03 h   broken
+NewYork -5.0   rise 11-20 06:50   set 11-20 16:33     +9.72 h   ok
+
+Tokyo output:  "04:39 - 02:55", "02:55 - 01:11", "23:27 - 21:43"</code></pre>
+          <p>India and everywhere west of it is unaffected, which is why this has gone unnoticed. The fix is to anchor the search at local midnight expressed in UT — <code>swe.julday(...)</code> on the local date, minus the offset as a fractional hour — rather than at <code>0.0</code> UT of the shifted date.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="finding f-warn">
+      <div class="finding-top">
+        <span class="tag">Design</span>
+        <div class="finding-txt">
+          <h4>3 · Tithi and nakshatra are sampled once, at local noon</h4>
+          <p>Both limbs are read at a single instant. A nakshatra that ends at 09:00 or begins at 15:00 is invisible to the filter, and the Moon can traverse a full nakshatra boundary within a day. The returned <em>time windows</em> are never checked against the limb that qualified the date — a date can be returned whose auspicious Choghadiya fall entirely outside the qualifying nakshatra.</p>
+          <p>Traditional muhurat selection resolves the limb over the actual window. Making that change means computing nakshatra and tithi intervals — the machinery already exists in <code>_find_next_boundary</code> on the Panchang view (<code>views.py:117</code>) and could be reused here.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="finding f-warn">
+      <div class="finding-top">
+        <span class="tag">Design</span>
+        <div class="finding-txt">
+          <h4>4 · The returned times are identical for every category</h4>
+          <p><code>auspicious_times_list</code> is computed once per day, outside the category loop, and the same list object is assigned to every qualifying category. A Vivah muhurat and a Vahan Puja muhurat on the same date get byte-identical windows. Consumers should not read the times as category-specific guidance — they are simply "that day's auspicious Choghadiya".</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="finding f-warn">
+      <div class="finding-top">
+        <span class="tag">Design</span>
+        <div class="finding-txt">
+          <h4>5 · Rahu Kaal is not excluded</h4>
+          <p>The Panchang endpoint computes an Abhijit-vs-Rahu-Kaal overlap and emits an explicit warning string (<code>views.py:339–381</code>). This endpoint does no such check — a returned window can sit wholly inside Rahu Kaal. Rahu Kaal is also an eighth-of-daylight slot, so the two grids align exactly and the intersection is cheap to compute; the mapping already exists as <code>rahu_parts_mapping</code>.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="finding f-note">
+      <div class="finding-top">
+        <span class="tag">Note</span>
+        <div class="finding-txt">
+          <h4>6 · The <code>[:3]</code> cap silently drops a valid slot on three weekdays</h4>
+          <p>Monday, Wednesday and Thursday each have four auspicious Choghadiya; the fourth — the slot-7 repeat, running until sunset — is truncated away. Tuesday, Friday, Saturday and Sunday are unaffected, so the cap only ever bites on those three weekdays.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="finding f-note">
+      <div class="finding-top">
+        <span class="tag">Note</span>
+        <div class="finding-txt">
+          <h4>7 · One UTC offset is used for the whole month</h4>
+          <p>The offset is resolved once, against the synthetic date <code>YYYY-MM-01</code>. A DST transition mid-month leaves every subsequent day off by an hour. Irrelevant for India, but wrong for European and North American locations in March, October and November.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="finding f-note">
+      <div class="finding-top">
+        <span class="tag">Note</span>
+        <div class="finding-txt">
+          <h4>8 · Failures are swallowed, not surfaced</h4>
+          <p>Three independent silent-fallback paths: an ephemeris error <code>continue</code>s the day out of the response; a <code>rise_trans</code> failure substitutes a hardcoded 06:00 / 18:30 day; and an unresolvable <code>location</code> falls back to Ujjain with only a <code>print()</code> to stdout. Since the response echoes no location, a caller who mistypes a city receives Ujjain timings with no indication anything went wrong.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <p><b>Only Finding 2 produces visibly malformed output.</b> Findings 1 and 3–5 produce output that looks perfectly well-formed but encodes a narrower or different notion of "auspicious" than a printed panchang would. Those are the ones to align on with whoever owns the astrological rules before changing any code.</p>
+    </div>
+  </section>
+
+  <footer>
+    <span>panchang_engine/views.py · GlobalMoohratsAPIView</span>
+    <span>Verified against branch <b>dev</b> @ ed371ea0</span>
+  </footer>
+
+</div>
+</body>
+</html>

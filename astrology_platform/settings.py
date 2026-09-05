@@ -1,7 +1,5 @@
 import os
 from pathlib import Path
-
-# Load environment variables from .env
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,13 +13,6 @@ SECRET_KEY = os.getenv(
 )
 
 DEBUG = os.getenv("DEBUG", "True").lower() == "true"
-
-# ALLOWED_HOSTS = [
-#     host.strip()
-#     for host in os.getenv("ALLOWED_HOSTS", "").split(",")
-#     if host.strip()
-# ]
-
 ALLOWED_HOSTS = [
     "engine.nakshatra.guru",
     ".nakshatra.guru",
@@ -80,6 +71,8 @@ DATABASES = {
     }
 }
 
+# ----- Added by Shubham for Docker Deployment -----
+
 # Internationalization
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
@@ -93,3 +86,11 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # Default primary key field type
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Share cache across gunicorn workers using file-based cache
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
+        'LOCATION': os.path.join(BASE_DIR, 'django_cache'),
+    }
+}
