@@ -49,15 +49,11 @@ class GeoLocationMixin:
         self.DEFAULT_TZ = "Asia/Kolkata"
 
     def resolve_location_and_tz(self, request):
-        date_param = request.GET.get("date") or datetime.now().strftime("%Y-%m-%d")
-        location_param = request.GET.get("location")
-
-        try:
-            now = datetime.now()
-            parsed_date = datetime.strptime(date_param, "%Y-%m-%d")
-            target_dt = parsed_date.replace(hour=now.hour, minute=now.minute, second=now.second)
-        except ValueError:
-            return None, None, None, None, None, None, None
+        # The Nakshatra backend sends `location`. Keep `city` as a compatible alias
+        # for direct engine consumers without changing any response fields.
+        location_param = request.GET.get("location") or request.GET.get("city")
+        if location_param:
+            location_param = location_param.strip()
 
         if location_param:
             cache_key = f"geo_{location_param.strip().lower()}"
@@ -100,12 +96,30 @@ class GeoLocationMixin:
 
         try:
             tz = pytz.timezone(tz_name)
+        except Exception:
+            tz_name = self.DEFAULT_TZ
+            tz = pytz.timezone(tz_name)
+
+        # When no date is supplied, "today" must be evaluated in the resolved
+        # city's timezone rather than the server's timezone.
+        now_local = datetime.now(tz)
+        date_param = request.GET.get("date") or now_local.strftime("%Y-%m-%d")
+
+        try:
+            parsed_date = datetime.strptime(date_param, "%Y-%m-%d")
+            target_dt = parsed_date.replace(
+                hour=now_local.hour,
+                minute=now_local.minute,
+                second=now_local.second,
+            )
             localized = tz.localize(target_dt)
             offset = localized.utcoffset()
             if offset is not None:
                 numeric_tz = offset.total_seconds() / 3600.0
             else:
                 numeric_tz = 5.5
+        except ValueError:
+            return None, None, None, None, None, None, None
         except Exception:
             numeric_tz = 5.5
 
