@@ -48,7 +48,7 @@ class GeoLocationMixin:
         self.DEFAULT_LON = 75.7885
         self.DEFAULT_TZ = "Asia/Kolkata"
 
-    def resolve_location_and_tz(self, request):
+    def resolve_location_and_tz(self, request, date_override=None):
         # The Nakshatra backend sends `location`. Keep `city` as a compatible alias
         # for direct engine consumers without changing any response fields.
         location_param = request.GET.get("location") or request.GET.get("city")
@@ -103,7 +103,7 @@ class GeoLocationMixin:
         # When no date is supplied, "today" must be evaluated in the resolved
         # city's timezone rather than the server's timezone.
         now_local = datetime.now(tz)
-        date_param = request.GET.get("date") or now_local.strftime("%Y-%m-%d")
+        date_param = date_override or request.GET.get("date") or now_local.strftime("%Y-%m-%d")
 
         try:
             parsed_date = datetime.strptime(date_param, "%Y-%m-%d")
@@ -493,7 +493,7 @@ class GlobalTransitsAPIView(View, GeoLocationMixin):
         if not geo_data[0]:
             return JsonResponse({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
             
-        date_param, target_dt, resolved_location, _, numeric_tz, lat, lon = geo_data
+        date_param, target_dt, resolved_location, _, numeric_tz, _lat, _lon = geo_data
 
         transits_list = []
         seen_planets = set()
@@ -605,10 +605,14 @@ class GlobalCelestialAPIView(View, GeoLocationMixin):
         if not geo_data[0]:
             return JsonResponse({"error": "Invalid date format. Use YYYY-MM-DD"}, status=400)
             
-        date_param, target_dt, resolved_location, _, numeric_tz, _, _ = geo_data
+        date_param, target_dt, resolved_location, _, numeric_tz, lat, lon = geo_data
 
         swe.set_sid_mode(swe.SIDM_LAHIRI)
-        calc_flag = swe.FLG_SWIEPH | swe.FLG_SIDEREAL
+        # Planetary longitudes are calculated topocentrically for the resolved
+        # city. This makes the positions endpoint genuinely location-aware while
+        # retaining its existing response contract.
+        swe.set_topo(lon, lat, 0.0)
+        calc_flag = swe.FLG_SWIEPH | swe.FLG_SIDEREAL | swe.FLG_TOPOCTR
 
         jd = swe.julday(target_dt.year, target_dt.month, target_dt.day, target_dt.hour + target_dt.minute/60.0 - numeric_tz)
 
@@ -1031,13 +1035,10 @@ class GlobalMoohratsAPIView(View, GeoLocationMixin):
             categories_to_check = self.MUHURAT_RULES
 
         try:
-            # Temporarily patch the GET 'date' param so GeoLocationMixin resolves correctly
-            original_get = request.GET.copy()
-            request.GET = request.GET.copy()
-            request.GET["date"] = f"{year}-{month:02d}-01"
-        
-            geo_data = self.resolve_location_and_tz(request)
-            request.GET = original_get # Restore original query params
+            geo_data = self.resolve_location_and_tz(
+                request,
+                date_override=f"{year}-{month:02d}-01",
+            )
         
             if not geo_data[0]:
                 lat, lon, tz_name, resolved_location = self.DEFAULT_LAT, self.DEFAULT_LON, self.DEFAULT_TZ, self.DEFAULT_CITY
@@ -1054,7 +1055,20 @@ class GlobalMoohratsAPIView(View, GeoLocationMixin):
         
             for d in range(1, num_days + 1):
                 target_dt = datetime(year, month, d, 12, 0, 0)
-                utc_dt = target_dt - timedelta(hours=numeric_tz)
+                # The UTC offset can change within a month in DST-observing
+                # locations, so resolve it separately for each Muhurat date.
+                try:
+                    day_timezone = pytz.timezone(tz_name)
+                    day_offset_delta = day_timezone.localize(target_dt).utcoffset()
+                    day_numeric_tz = (
+                        day_offset_delta.total_seconds() / 3600.0
+                        if day_offset_delta is not None
+                        else numeric_tz
+                    )
+                except Exception:
+                    day_numeric_tz = numeric_tz
+
+                utc_dt = target_dt - timedelta(hours=day_numeric_tz)
                 jd_now = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, utc_dt.hour + utc_dt.minute/60.0)
             
                 try:
@@ -1072,7 +1086,7 @@ class GlobalMoohratsAPIView(View, GeoLocationMixin):
             
                 date_str = target_dt.strftime("%Y-%m-%d")
             
-                sunrise, sunset = self._get_sunrise_sunset(target_dt, lat, lon, numeric_tz)
+                sunrise, sunset = self._get_sunrise_sunset(target_dt, lat, lon, day_numeric_tz)
                 day_length_sec = (sunset - sunrise).total_seconds()
                 part_duration = day_length_sec / 8
             

@@ -5,7 +5,13 @@ from unittest.mock import Mock, patch
 import pytz
 from django.test import RequestFactory, SimpleTestCase
 
-from panchang_engine.views import GeoLocationMixin, GlobalPanchangAPIView
+from panchang_engine.views import (
+    GeoLocationMixin,
+    GlobalCelestialAPIView,
+    GlobalMoohratsAPIView,
+    GlobalPanchangAPIView,
+    GlobalTransitsAPIView,
+)
 
 
 class FixedDateTime(real_datetime):
@@ -145,5 +151,123 @@ class PanchangResponseContractTests(SimpleTestCase):
                 "purnima_month",
                 "pravishte_gate",
             },
+        )
+
+
+class LocationAwareEndpointTests(SimpleTestCase):
+    def test_transits_use_the_resolved_city_timezone_for_the_local_day(self):
+        resolved = (
+            "2026-07-01",
+            real_datetime(2026, 7, 1, 12, 0),
+            "New York",
+            "America/New_York",
+            -4.0,
+            40.7128,
+            -74.0060,
+        )
+
+        with patch.object(
+            GlobalTransitsAPIView,
+            "resolve_location_and_tz",
+            return_value=resolved,
+        ), patch("panchang_engine.views.swe.julday", return_value=2461223.5) as julday, patch(
+            "panchang_engine.views.swe.calc_ut",
+            return_value=([10.0, 0.0, 0.0, 0.1], 0),
+        ):
+            response = self.client.get(
+                "/api/transits/",
+                {"date": "2026-07-01", "location": "New York"},
+            )
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(payload), {"date", "location", "transits"})
+        self.assertEqual(payload["location"], "New York")
+        # Midnight in New York during DST is 04:00 UTC.
+        self.assertEqual(julday.call_args_list[0].args[3], 4.0)
+
+    def test_positions_alias_uses_resolved_coordinates_topocentrically(self):
+        resolved = (
+            "2026-07-01",
+            real_datetime(2026, 7, 1, 12, 0),
+            "New York",
+            "America/New_York",
+            -4.0,
+            40.7128,
+            -74.0060,
+        )
+
+        with patch.object(
+            GlobalCelestialAPIView,
+            "resolve_location_and_tz",
+            return_value=resolved,
+        ), patch("panchang_engine.views.swe.set_topo") as set_topo, patch(
+            "panchang_engine.views.swe.calc_ut",
+            return_value=([45.0, 0.0, 0.0, 0.1], 0),
+        ) as calc_ut:
+            response = self.client.get(
+                "/api/positions/",
+                {"date": "2026-07-01", "location": "New York"},
+            )
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(payload), {"date", "location", "positions"})
+        self.assertEqual(payload["location"], "New York")
+        set_topo.assert_called_once_with(-74.0060, 40.7128, 0.0)
+        self.assertTrue(
+            all(call.args[2] & __import__("swisseph").FLG_TOPOCTR for call in calc_ut.call_args_list)
+        )
+
+    def test_moohrats_use_city_coordinates_and_each_days_dst_offset(self):
+        resolved = (
+            "2026-03-01",
+            real_datetime(2026, 3, 1, 12, 0),
+            "New York",
+            "America/New_York",
+            -5.0,
+            40.7128,
+            -74.0060,
+        )
+
+        def fixed_sunrise_sunset(target_date, _lat, _lon, _offset):
+            return target_date.replace(hour=6), target_date.replace(hour=18)
+
+        with patch.object(
+            GlobalMoohratsAPIView,
+            "resolve_location_and_tz",
+            return_value=resolved,
+        ) as resolver, patch.object(
+            GlobalMoohratsAPIView,
+            "_get_sunrise_sunset",
+            side_effect=fixed_sunrise_sunset,
+        ) as sunrise_sunset, patch(
+            "panchang_engine.views.swe.calc_ut",
+            return_value=([10.0, 0.0, 0.0, 0.1], 0),
+        ):
+            response = self.client.get(
+                "/api/moohrats/",
+                {
+                    "month": "March",
+                    "year": "2026",
+                    "location": "New York",
+                    "title": "vivahmuhurat",
+                },
+            )
+
+        payload = response.json()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(set(payload), {"moohrats"})
+        self.assertEqual(
+            resolver.call_args.kwargs["date_override"],
+            "2026-03-01",
+        )
+        offsets = {call.args[3] for call in sunrise_sunset.call_args_list}
+        self.assertEqual(offsets, {-5.0, -4.0})
+        self.assertTrue(
+            all(
+                call.args[1:3] == (40.7128, -74.0060)
+                for call in sunrise_sunset.call_args_list
+            )
         )
 
